@@ -565,14 +565,14 @@ def debug():
         with conn.cursor() as cur:
             # Últimos 3 snapshots
             cur.execute("""
-                SELECT snapshot_ts, en_preparacion, embalados, en_despacho, despachados_hoy
+                SELECT id, snapshot_ts, en_preparacion, embalados, en_despacho, despachados_hoy
                 FROM orders_kpi_snapshot
                 ORDER BY id DESC
                 LIMIT 3
             """)
             result["snapshots"] = [
-                {"snapshot_ts": r[0].isoformat(), "en_prep": r[1], "embalados": r[2],
-                 "en_despacho": r[3], "despachados_hoy": r[4]}
+                {"id": r[0], "snapshot_ts": r[1].isoformat(), "en_prep": r[2], "embalados": r[3],
+                 "en_despacho": r[4], "despachados_hoy": r[5]}
                 for r in cur.fetchall()
             ]
 
@@ -592,6 +592,11 @@ def debug():
             cur.execute("SELECT COUNT(*) FROM order_events")
             result["total_events"] = cur.fetchone()[0]
 
+            # Total snapshots
+            cur.execute("SELECT COUNT(*), MAX(id), MIN(id) FROM orders_kpi_snapshot")
+            r = cur.fetchone()
+            result["snapshots_total"] = {"count": r[0], "max_id": r[1], "min_id": r[2]}
+
             # Evento más reciente
             cur.execute("""
                 SELECT order_id, status, event_ts::timestamptz
@@ -607,8 +612,23 @@ def debug():
     return JSONResponse(result)
 
 
-@app.post("/api/debug/snapshot")
-def force_snapshot():
+@app.post("/api/debug/cleanup-snapshots")
+def cleanup_snapshots():
+    """Elimina snapshots duplicados, deja solo el más reciente por id. Solo para diagnóstico."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM orders_kpi_snapshot")
+            before = cur.fetchone()[0]
+
+            cur.execute("""
+                DELETE FROM orders_kpi_snapshot
+                WHERE id < (SELECT MAX(id) FROM orders_kpi_snapshot)
+            """)
+            cur.execute("SELECT COUNT(*) FROM orders_kpi_snapshot")
+            after = cur.fetchone()[0]
+        conn.commit()
+
+    return JSONResponse({"deleted": before - after, "remaining": after})
     """Fuerza el recálculo del snapshot KPI sin correr sync completo. Solo para diagnóstico."""
     now         = datetime.now(timezone.utc)
     today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
