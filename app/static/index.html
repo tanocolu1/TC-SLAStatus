@@ -1005,7 +1005,9 @@
         // Refrescar KPIs y tops inmediatamente
         const m = await fetchJson("/api/metrics");
         lastSuccess = Date.now();
+        consecutiveErrors = 0;
         markStale(false);
+        resetTvReloadTimer();
         applyMetrics(m);
         await refreshTops();
 
@@ -1042,6 +1044,10 @@
     let topsCounter   = 0;
     let lastSuccess   = null;  // timestamp del último fetch exitoso
 
+    // ── Loop robusto con auto-reconexión ──────────────────────────────────────
+    let consecutiveErrors = 0;
+    const MAX_ERRORS = 5;
+
     function startKpiLoop(intervalMs) {
       if (kpiTimer) clearInterval(kpiTimer);
       kpiIntervalMs = intervalMs;
@@ -1064,9 +1070,45 @@
       }, 500);
     }
 
-    // ── Stale indicator: si pasan 3 × intervalo sin respuesta ─────────────────
+    // ── Stale indicator ────────────────────────────────────────────────────────
     function markStale(isStale) {
       $("pillServer").classList.toggle("stale", isStale);
+      // En TV: mostrar overlay de reconexión si hay muchos errores
+      if (IS_TV && isStale) {
+        let overlay = document.getElementById('tvReconnect');
+        if (!overlay) {
+          overlay = document.createElement('div');
+          overlay.id = 'tvReconnect';
+          overlay.style.cssText = `
+            position:fixed; inset:0; background:rgba(11,15,20,.85);
+            display:flex; flex-direction:column; align-items:center;
+            justify-content:center; z-index:9999; color:#e6edf3;
+          `;
+          overlay.innerHTML = \`
+            <div style="font-size:clamp(24px,3vw,48px);margin-bottom:16px">⚠️</div>
+            <div style="font-size:clamp(16px,2vw,28px);font-weight:700">Reconectando…</div>
+            <div style="font-size:clamp(12px,1.2vw,18px);color:#9aa4b2;margin-top:8px">
+              Verificá la conexión a internet
+            </div>
+          \`;
+          document.body.appendChild(overlay);
+        }
+      } else {
+        const overlay = document.getElementById('tvReconnect');
+        if (overlay) overlay.remove();
+      }
+    }
+
+    // ── Recarga de página en TV si lleva mucho tiempo sin datos ───────────────
+    let tvReloadTimer = null;
+    function resetTvReloadTimer() {
+      if (!IS_TV) return;
+      if (tvReloadTimer) clearTimeout(tvReloadTimer);
+      // Si en 5 minutos no hubo datos, recargar la página completa
+      tvReloadTimer = setTimeout(() => {
+        console.warn('TV: sin datos por 5min, recargando página…');
+        location.reload();
+      }, 5 * 60 * 1000);
     }
 
     // ── Gráfico de flujo ───────────────────────────────────────────────────────
@@ -1145,8 +1187,8 @@
         }
       } catch (e) {
         console.error("metrics error", e);
-        // FIX: marcar como stale si llevamos 3 ciclos sin respuesta
-        if (lastSuccess && Date.now() - lastSuccess > kpiIntervalMs * 3) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_ERRORS) {
           markStale(true);
         }
       }
