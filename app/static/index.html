@@ -177,9 +177,74 @@
       transition: width .9s linear;
     }
 
+    /* ── Gráfico de flujo ── */
+    .card-flow{
+      margin: 0 0 12px;
+    }
+    .flow-bars{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .flow-row{
+      display: grid;
+      grid-template-columns: 130px 1fr 56px;
+      align-items: center;
+      gap: 10px;
+    }
+    .flow-label{
+      font-size: 12px;
+      color: var(--muted);
+      text-align: right;
+      white-space: nowrap;
+    }
+    .flow-track{
+      height: 22px;
+      background: rgba(255,255,255,.04);
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+    .flow-fill{
+      height: 100%;
+      border-radius: 6px;
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+      position: relative;
+    }
+    .flow-fill::after{
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent 60%, rgba(255,255,255,.08));
+      border-radius: inherit;
+    }
+    .flow-fill.prep  { background: linear-gradient(90deg, #3b5fc0, #5b7fe0); }
+    .flow-fill.desp  { background: linear-gradient(90deg, #b07d12, #e0a800); }
+    .flow-fill.env   { background: linear-gradient(90deg, #1a7a41, #26a65b); }
+    .flow-pct{
+      font-size: 13px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      color: var(--text);
+    }
+    .flow-count{
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .flow-total{
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+      text-align: right;
+    }
+
     @media (max-width: 1200px){
       .grid-kpi{ grid-template-columns: repeat(2, minmax(180px, 1fr)); }
       .grid-bottom{ grid-template-columns: 1fr; }
+      .flow-row{ grid-template-columns: 100px 1fr 48px; }
     }
   </style>
 </head>
@@ -243,6 +308,45 @@
         </div>
         <div class="kpi-value" id="kpiLate">—</div>
         <div class="kpi-sub muted">Edad promedio: <span id="kpiAvg">—</span> min</div>
+      </div>
+    </div>
+
+    <div class="card card-flow">
+      <div class="card-title">
+        Distribución de pedidos activos
+        <span id="flowTotal">—</span>
+      </div>
+      <div class="flow-bars">
+        <div class="flow-row">
+          <div>
+            <div class="flow-label">A procesar</div>
+            <div class="flow-count" id="flowPrepCount">—</div>
+          </div>
+          <div class="flow-track">
+            <div class="flow-fill prep" id="flowPrepBar" style="width:0%"></div>
+          </div>
+          <div class="flow-pct" id="flowPrepPct">—</div>
+        </div>
+        <div class="flow-row">
+          <div>
+            <div class="flow-label">En despacho</div>
+            <div class="flow-count" id="flowDespCount">—</div>
+          </div>
+          <div class="flow-track">
+            <div class="flow-fill desp" id="flowDespBar" style="width:0%"></div>
+          </div>
+          <div class="flow-pct" id="flowDespPct">—</div>
+        </div>
+        <div class="flow-row">
+          <div>
+            <div class="flow-label">Enviados hoy</div>
+            <div class="flow-count" id="flowEnvCount">—</div>
+          </div>
+          <div class="flow-track">
+            <div class="flow-fill env" id="flowEnvBar" style="width:0%"></div>
+          </div>
+          <div class="flow-pct" id="flowEnvPct">—</div>
+        </div>
       </div>
     </div>
 
@@ -403,9 +507,43 @@
       $("pillServer").classList.toggle("stale", isStale);
     }
 
+    // ── Gráfico de flujo ───────────────────────────────────────────────────────
+    function updateFlowChart(m) {
+      // "A procesar" = en_preparacion + embalados (todo lo que aún no salió)
+      const prep  = (m.en_preparacion ?? 0) + (m.embalados ?? 0);
+      const desp  = m.en_despacho    ?? 0;
+      const env   = m.despachados_hoy ?? 0;
+      const total = prep + desp + env;
+
+      $("flowTotal").textContent = total > 0
+        ? `${total.toLocaleString("es-AR")} pedidos en total`
+        : "Sin datos";
+
+      function setBar(barId, pctId, countId, val, suffix) {
+        const pct = total > 0 ? (val / total) * 100 : 0;
+        $(barId).style.width  = pct.toFixed(1) + "%";
+        $(pctId).textContent  = pct.toFixed(1) + "%";
+        $(countId).textContent = val.toLocaleString("es-AR") + suffix;
+      }
+
+      setBar("flowPrepBar", "flowPrepPct", "flowPrepCount", prep, " pedidos");
+      setBar("flowDespBar", "flowDespPct", "flowDespCount", desp, " pedidos");
+      setBar("flowEnvBar",  "flowEnvPct",  "flowEnvCount",  env,  " pedidos");
+    }
+
     // ── Actualizar KPIs en el DOM ──────────────────────────────────────────────
     function applyMetrics(m) {
-      $("serverTime").textContent = fmtTime(m.server_time_utc);
+      // Mostramos la hora local del cliente (prueba que el fetch funcionó)
+      // + antigüedad del snapshot para saber si /sync está corriendo.
+      const fetchedAt = new Date().toLocaleTimeString("es-AR", { hour12: false });
+      let snapshotAge = "";
+      if (m.server_time_utc) {
+        const ageSec = Math.round((Date.now() - new Date(m.server_time_utc).getTime()) / 1000);
+        if (ageSec < 60)       snapshotAge = ` · sync hace ${ageSec}s`;
+        else if (ageSec < 3600) snapshotAge = ` · sync hace ${Math.round(ageSec/60)}min`;
+        else                    snapshotAge = ` · sync hace ${Math.round(ageSec/3600)}h`;
+      }
+      $("serverTime").textContent = fetchedAt + snapshotAge;
 
       $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
       $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
@@ -422,6 +560,7 @@
                (m.en_despacho    ?? 0) > 0 ? "Pendientes" : "OK");
       const bl = badgeForLate(m.atrasados_24h ?? 0);
       setBadge($("badgeLate"), bl.cls, bl.text);
+      updateFlowChart(m);
     }
 
     // ── Tick principal ─────────────────────────────────────────────────────────
