@@ -1040,7 +1040,7 @@
     // no está hardcodeado en 10 s.
 
     const TOPS_EVERY = IS_TV ? 2 : 6;  // en TV tops cada 2 ciclos
-    let kpiIntervalMs = IS_TV ? 30_000 : 10_000;
+    let kpiIntervalMs = IS_TV ? 120_000 : 10_000;
     let kpiTimer      = null;
     let topsCounter   = 0;
     let lastSuccess   = null;  // timestamp del último fetch exitoso
