@@ -59,6 +59,22 @@
     }
     /* FIX: indicador visual de último refresco */
     .pill.stale{ border-color: rgba(214,69,69,.45); color: #ffb3b3; }
+    #btnSync{
+      border: 1px solid var(--line);
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    #btnSync:hover:not(:disabled){ background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.2); }
+    #btnSync:disabled{ opacity: .45; cursor: not-allowed; }
+    #btnSync.syncing{ border-color: rgba(38,166,154,.5); color: #7eecd8; }
+    #btnSync.ok    { border-color: rgba(31,157,85,.5);  color: #b5f5cf; }
+    #btnSync.err   { border-color: rgba(214,69,69,.5);  color: #ffb3b3; }
 
     .grid-kpi{
       display:grid;
@@ -253,9 +269,9 @@
     <div class="topbar">
       <div class="title">Depósito · Dashboard</div>
       <div class="meta">
-        <!-- FIX: muestra countdown en lugar del intervalo fijo -->
         <div class="pill" id="pillCountdown">Próximo refresh en <span id="refreshCountdown">—</span>s</div>
         <div class="pill" id="pillServer">Servidor <span id="serverTime">—</span></div>
+        <button id="btnSync" onclick="forceSync()">⟳ Sync ahora</button>
       </div>
     </div>
 
@@ -462,6 +478,47 @@
           <tbody>${rows}</tbody>
         </table>`;
     }
+
+    // ─── Sync manual ───────────────────────────────────────────────────────────
+    async function forceSync() {
+      const btn = $("btnSync");
+      btn.disabled = true;
+      btn.className = "syncing";
+      btn.textContent = "⟳ Sincronizando…";
+
+      try {
+        const res = await fetch("/sync", {
+          method: "POST",
+          headers: SYNC_SECRET ? { "X-Sync-Secret": SYNC_SECRET } : {},
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || res.status);
+
+        btn.className = "ok";
+        btn.textContent = `✓ ${data.orders_received} pedidos, ${data.changed} cambios`;
+
+        // Refrescar KPIs y tops inmediatamente
+        const m = await fetchJson("/api/metrics");
+        lastSuccess = Date.now();
+        markStale(false);
+        applyMetrics(m);
+        await refreshTops();
+
+      } catch (e) {
+        console.error("force sync error", e);
+        btn.className = "err";
+        btn.textContent = "✕ Error — ver consola";
+      } finally {
+        setTimeout(() => {
+          btn.disabled  = false;
+          btn.className = "";
+          btn.textContent = "⟳ Sync ahora";
+        }, 4000);
+      }
+    }
+
+    // Si el servidor requiere secret, definilo acá (o dejá vacío si /sync es público)
+    const SYNC_SECRET = "";
 
     // ─── Lógica de refresco ────────────────────────────────────────────────────
     //
