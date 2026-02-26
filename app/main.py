@@ -489,10 +489,10 @@ def _run_sync() -> dict:
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(DISTINCT order_id) FROM order_events
+      (SELECT COUNT(*) FROM orders_current
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
-         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
+         AND updated_ts::timestamptz >= %(today_start)s)               AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
@@ -729,10 +729,10 @@ def cleanup_snapshots():
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(DISTINCT order_id) FROM order_events
+      (SELECT COUNT(*) FROM orders_current
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
-         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
+         AND updated_ts::timestamptz >= %(today_start)s)               AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
