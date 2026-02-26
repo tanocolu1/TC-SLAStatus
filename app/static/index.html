@@ -541,6 +541,91 @@
     body.tv-mode .alert-title  { font-size: 18px; }
     body.tv-mode .grid-analytics { display: none; }
 
+
+    /* ── Analytics avanzados ────────────────────────────────── */
+    .grid-analytics-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .grid-analytics-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .units-big {
+      font-size: 42px;
+      font-weight: 800;
+      line-height: 1;
+      color: #58a6ff;
+    }
+    .units-sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .rate-chart { margin-top: 8px; display: flex; align-items: flex-end; gap: 4px; height: 80px; }
+    .rate-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+    .rate-bar {
+      width: 100%;
+      background: linear-gradient(180deg, #3b5fc0, #58a6ff);
+      border-radius: 3px 3px 0 0;
+      transition: height .4s cubic-bezier(.4,0,.2,1);
+      min-height: 2px;
+    }
+    .rate-bar-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+    .rate-bar-val   { font-size: 11px; font-weight: 700; }
+    .peak-chart { margin-top: 8px; display: flex; align-items: flex-end; gap: 2px; height: 70px; }
+    .peak-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; }
+    .peak-bar {
+      width: 100%;
+      background: linear-gradient(180deg, #b07d12, #e0a800);
+      border-radius: 2px 2px 0 0;
+      min-height: 2px;
+      transition: height .4s;
+    }
+    .peak-bar.highlight { background: linear-gradient(180deg, #d64545, #ff6b6b); }
+    .peak-label { font-size: 9px; color: var(--muted); }
+    .comparison-chart { margin-top: 8px; }
+    .comp-row {
+      display: grid;
+      grid-template-columns: 36px 1fr 36px;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .comp-day { color: var(--muted); text-align: center; }
+    .comp-bars { display: flex; flex-direction: column; gap: 2px; }
+    .comp-bar-row { display: flex; align-items: center; gap: 4px; }
+    .comp-bar-fill {
+      height: 8px;
+      border-radius: 2px;
+      transition: width .4s;
+      min-width: 2px;
+    }
+    .comp-bar-fill.this { background: #58a6ff; }
+    .comp-bar-fill.last { background: rgba(88,166,255,.3); }
+    .comp-val { font-size: 11px; font-weight: 700; min-width: 24px; text-align: right; }
+    .cancel-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    .cancel-table th { font-size: 11px; color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--line); }
+    .cancel-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); }
+    .cancel-table tr:last-child td { border-bottom: none; }
+    .backtrack-list { margin-top: 8px; max-height: 200px; overflow-y: auto; }
+    .backtrack-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+    }
+    .backtrack-item:last-child { border-bottom: none; }
+    .backtrack-order { font-weight: 700; color: #58a6ff; font-family: monospace; }
+    .backtrack-arrow { color: #d64545; font-weight: 700; }
+    .ttfm-big { font-size: 36px; font-weight: 800; color: #3dd68c; line-height: 1; }
+    .ttfm-median { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    @media (max-width: 1200px) {
+      .grid-analytics-2 { grid-template-columns: 1fr 1fr; }
+      .grid-analytics-3 { grid-template-columns: 1fr; }
+    }
+    body.tv-mode .grid-analytics-2,
+    body.tv-mode .grid-analytics-3 { display: none; }
+
   </style>
 </head>
 <body>
@@ -706,6 +791,52 @@
           <span class="muted" id="stageTimesMeta">—</span>
         </div>
         <div id="stageTimesWrap"><div class="empty">Cargando…</div></div>
+      </div>
+    </div>
+
+    <!-- Grupo 1: Operativo inmediato -->
+    <div class="grid-analytics-2">
+      <div class="card">
+        <div class="card-title"><div>Unidades en preparación</div><span class="muted" id="unitsPrepMeta">—</span></div>
+        <div class="units-big" id="unitsPrepVal">—</div>
+        <div class="units-sub" id="unitsPrepSub">— pedidos activos</div>
+      </div>
+      <div class="card">
+        <div class="card-title"><div>Velocidad de despacho <span>(últimas 8hs)</span></div><span class="muted" id="dispatchRateMeta">—</span></div>
+        <div class="rate-chart" id="dispatchRateChart"><div class="empty">Cargando…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><div>Sin movimiento +4hs <span id="stalledCount"></span></div><span class="muted" id="stalledMeta">—</span></div>
+        <div class="backtrack-list" id="stalledList"><div class="empty">Cargando…</div></div>
+      </div>
+    </div>
+
+    <!-- Grupo 2: Tendencias -->
+    <div class="grid-analytics-2">
+      <div class="card">
+        <div class="card-title"><div>Esta semana vs anterior</div><span class="muted" id="weeklyMeta">—</span></div>
+        <div class="comparison-chart" id="weeklyChart"><div class="empty">Cargando…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><div>Hora pico <span>(últimos 7 días)</span></div><span class="muted" id="peakMeta">—</span></div>
+        <div class="peak-chart" id="peakChart"><div class="empty">Cargando…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><div>Cancelaciones <span>(últimos 7 días)</span></div><span class="muted" id="cancelMeta">—</span></div>
+        <div id="cancelWrap"><div class="empty">Cargando…</div></div>
+      </div>
+    </div>
+
+    <!-- Grupo 3: Calidad -->
+    <div class="grid-analytics-3">
+      <div class="card">
+        <div class="card-title"><div>Pedidos que volvieron atrás <span id="backtrackCount"></span></div><span class="muted" id="backtrackMeta">—</span></div>
+        <div class="backtrack-list" id="backtrackList"><div class="empty">Cargando…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title"><div>Tiempo hasta primer movimiento <span>(últimos 7 días)</span></div></div>
+        <div class="ttfm-big" id="ttfmVal">—</div>
+        <div class="ttfm-median" id="ttfmSub">—</div>
       </div>
     </div>
 
@@ -1028,7 +1159,7 @@
 
     async function refreshTops() {
       await refreshAlerts();
-      if (!IS_TV) await Promise.all([refreshProductivity(), refreshStageTimes()]);
+      if (!IS_TV) await Promise.all([refreshProductivity(), refreshStageTimes(), refreshAllAnalytics()]);
       try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
@@ -1170,6 +1301,165 @@
       } catch(e) { console.error('stage-times error', e); }
     }
 
+
+    // ── Unidades en preparación ────────────────────────────────────────────────
+    async function refreshUnitsPrep() {
+      try {
+        const d = await fetchJson('/api/units-in-prep');
+        $('unitsPrepVal').textContent = Number(d.total_units).toLocaleString('es-AR');
+        $('unitsPrepSub').textContent = d.total_orders + ' pedidos activos';
+        $('unitsPrepMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('units-in-prep error', e); }
+    }
+
+    // ── Velocidad de despacho ──────────────────────────────────────────────────
+    async function refreshDispatchRate() {
+      try {
+        const data = await fetchJson('/api/dispatch-rate');
+        if (!data || data.length === 0) { $('dispatchRateChart').innerHTML = '<div class="empty">Sin datos.</div>'; return; }
+        const max = Math.max(...data.map(d => d.shipped), 1);
+        const bars = data.map(d => {
+          const h = new Date(d.hour).getHours();
+          const pct = Math.round(d.shipped / max * 100);
+          return `<div class="rate-bar-wrap">
+            <div class="rate-bar-val">${d.shipped}</div>
+            <div class="rate-bar" style="height:${pct}%"></div>
+            <div class="rate-bar-label">${h}hs</div>
+          </div>`;
+        }).join('');
+        $('dispatchRateChart').innerHTML = bars;
+        $('dispatchRateMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('dispatch-rate error', e); }
+    }
+
+    // ── Pedidos sin movimiento ─────────────────────────────────────────────────
+    async function refreshStalled() {
+      try {
+        const d = await fetchJson('/api/stalled-orders?hours=4');
+        $('stalledCount').textContent = d.count > 0 ? `(${d.count})` : '';
+        if (d.count === 0) { $('stalledList').innerHTML = '<div class="empty">✓ Todos los pedidos con movimiento reciente.</div>'; return; }
+        const items = d.orders.slice(0, 8).map(o => {
+          const hs = Math.floor(o.mins/60), ms = Math.round(o.mins%60);
+          const t = hs > 0 ? `${hs}h ${ms}m` : `${ms}m`;
+          return `<div class="backtrack-item">
+            <span class="backtrack-order">#${escapeHtml(o.order_id)}</span>
+            <span class="status-badge ${statusClass(o.status)}">${escapeHtml(o.status)}</span>
+            <span class="mins-badge mins-bad">${t}</span>
+          </div>`;
+        }).join('');
+        $('stalledList').innerHTML = items;
+        $('stalledMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('stalled-orders error', e); }
+    }
+
+    // ── Comparativa semanal ────────────────────────────────────────────────────
+    async function refreshWeekly() {
+      try {
+        const data = await fetchJson('/api/weekly-comparison');
+        if (!data || data.length === 0) { $('weeklyChart').innerHTML = '<div class="empty">Sin datos.</div>'; return; }
+        const max = Math.max(...data.flatMap(d => [d.this_week, d.last_week]), 1);
+        const rows = data.map(d => `
+          <div class="comp-row">
+            <div class="comp-day">${d.weekday}</div>
+            <div class="comp-bars">
+              <div class="comp-bar-row">
+                <div class="comp-bar-fill this" style="width:${Math.round(d.this_week/max*120)}px"></div>
+                <span class="comp-val">${d.this_week}</span>
+              </div>
+              <div class="comp-bar-row">
+                <div class="comp-bar-fill last" style="width:${Math.round(d.last_week/max*120)}px"></div>
+                <span class="comp-val" style="opacity:.5">${d.last_week}</span>
+              </div>
+            </div>
+          </div>`).join('');
+        $('weeklyChart').innerHTML = rows + `<div style="font-size:11px;color:var(--muted);margin-top:6px">
+          <span style="color:#58a6ff">■</span> Esta semana &nbsp;
+          <span style="color:rgba(88,166,255,.4)">■</span> Semana anterior
+        </div>`;
+        $('weeklyMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('weekly error', e); }
+    }
+
+    // ── Hora pico ──────────────────────────────────────────────────────────────
+    async function refreshPeakHours() {
+      try {
+        const data = await fetchJson('/api/peak-hours?days=7');
+        const max = Math.max(...data.map(d => d.shipped), 1);
+        const peakHour = data.reduce((a, b) => b.shipped > a.shipped ? b : a, data[0]).hour;
+        const bars = data.map(d => `
+          <div class="peak-bar-wrap">
+            <div class="peak-bar ${d.hour === peakHour ? 'highlight' : ''}"
+                 style="height:${Math.round(d.shipped/max*100)}%"></div>
+            <div class="peak-label">${d.hour % 3 === 0 ? d.hour+'h' : ''}</div>
+          </div>`).join('');
+        $('peakChart').innerHTML = bars;
+        $('peakMeta').textContent = `Pico: ${peakHour}hs`;
+      } catch(e) { console.error('peak-hours error', e); }
+    }
+
+    // ── Cancelaciones ──────────────────────────────────────────────────────────
+    async function refreshCancellations() {
+      try {
+        const data = await fetchJson('/api/cancellation-rate?days=7');
+        if (!data || data.length === 0) { $('cancelWrap').innerHTML = '<div class="empty">Sin datos.</div>'; return; }
+        const rows = data.map(d => {
+          const rateClass = d.rate > 10 ? 'bad' : d.rate > 5 ? 'warn' : 'good';
+          return `<tr>
+            <td>${d.day}</td>
+            <td class="num">${d.total}</td>
+            <td class="num">${d.cancelled}</td>
+            <td class="num"><span class="badge ${rateClass}">${d.rate}%</span></td>
+          </tr>`;
+        }).join('');
+        $('cancelWrap').innerHTML = `<table class="cancel-table">
+          <thead><tr><th>Día</th><th class="num">Total</th><th class="num">Cancel.</th><th class="num">Tasa</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+        $('cancelMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('cancellations error', e); }
+    }
+
+    // ── Pedidos que volvieron atrás ────────────────────────────────────────────
+    async function refreshBacktracked() {
+      try {
+        const d = await fetchJson('/api/backtracked-orders?days=7');
+        $('backtrackCount').textContent = d.count > 0 ? `(${d.count})` : '';
+        if (d.count === 0) { $('backtrackList').innerHTML = '<div class="empty">✓ Sin retrocesos en los últimos 7 días.</div>'; return; }
+        const items = d.orders.slice(0, 8).map(o => `
+          <div class="backtrack-item">
+            <span class="backtrack-order">#${escapeHtml(o.order_id)}</span>
+            <span class="backtrack-arrow">↩</span>
+            <span class="status-badge status-prep">${escapeHtml(o.status)}</span>
+            <span style="font-size:11px;color:var(--muted)">${fmtTime(o.ts)}</span>
+          </div>`).join('');
+        $('backtrackList').innerHTML = items;
+        $('backtrackMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('backtracked error', e); }
+    }
+
+    // ── Tiempo hasta primer movimiento ────────────────────────────────────────
+    async function refreshTTFM() {
+      try {
+        const d = await fetchJson('/api/time-to-first-move?days=7');
+        const fmt = m => m < 60 ? Math.round(m) + ' min' : Math.floor(m/60) + 'h ' + Math.round(m%60) + 'm';
+        $('ttfmVal').textContent = fmt(d.avg_mins);
+        $('ttfmSub').textContent = `Mediana: ${fmt(d.median_mins)} · Muestra: ${d.sample} pedidos`;
+      } catch(e) { console.error('ttfm error', e); }
+    }
+
+    async function refreshAllAnalytics() {
+      await Promise.all([
+        refreshUnitsPrep(),
+        refreshDispatchRate(),
+        refreshStalled(),
+        refreshWeekly(),
+        refreshPeakHours(),
+        refreshCancellations(),
+        refreshBacktracked(),
+        refreshTTFM(),
+      ]);
+    }
+
     // ── Pedidos pendientes ─────────────────────────────────────────────────────
     let pendingData = [];
     let activeFilter = 'all';
@@ -1286,8 +1576,7 @@
       await refreshTops();
       await refreshPending();
       await refreshAlerts();
-      await refreshProductivity();
-      await refreshStageTimes();
+      if (!IS_TV) { await refreshProductivity(); await refreshStageTimes(); await refreshAllAnalytics(); }
     })();
 
   </script>

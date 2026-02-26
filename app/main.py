@@ -1272,6 +1272,286 @@ def top_pickers(days: int = 1, limit: int = 10):
         for r in rows
     ]
 
+
+# ===============================
+# UNIDADES EN PREPARACIÓN
+# ===============================
+@app.get("/api/units-in-prep")
+def units_in_prep():
+    """Total de unidades (no pedidos) en estados de preparación."""
+    prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"]
+    q = """
+    SELECT
+        COALESCE(SUM(oi.quantity), 0)::int AS total_units,
+        COUNT(DISTINCT oc.order_id)::int   AS total_orders
+    FROM orders_current oc
+    JOIN order_items oi ON oi.order_id = oc.order_id
+    WHERE oc.status = ANY(%s)
+      AND oc.status <> ALL(%s)
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (prep_statuses, EXCLUDED_STATUSES or ["__never__"]))
+            r = cur.fetchone()
+    return {"total_units": r[0], "total_orders": r[1]}
+
+
+# ===============================
+# VELOCIDAD DE DESPACHO
+# ===============================
+@app.get("/api/dispatch-rate")
+def dispatch_rate():
+    """Pedidos despachados por hora en las últimas 8 horas."""
+    since = datetime.now(timezone.utc) - timedelta(hours=8)
+    q = """
+    SELECT
+        date_trunc('hour', event_ts::timestamptz AT TIME ZONE %s) AS hour_local,
+        COUNT(DISTINCT order_id)::int AS shipped
+    FROM order_events
+    WHERE status = ANY(%s)
+      AND status <> ALL(%s)
+      AND event_ts::timestamptz >= %s
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], since))
+            rows = cur.fetchall()
+    return [{"hour": r[0].isoformat(), "shipped": r[1]} for r in rows]
+
+
+# ===============================
+# PEDIDOS SIN MOVIMIENTO
+# ===============================
+@app.get("/api/stalled-orders")
+def stalled_orders(hours: int = 4, limit: int = 50):
+    """Pedidos activos que no cambiaron de estado en más de X horas."""
+    active_statuses = (
+        STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"] +
+        STATUS_MAP["PREPARACION"] + STATUS_MAP["EMBALADO"] + STATUS_MAP["DESPACHO"]
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = """
+    SELECT
+        oc.order_id,
+        oc.status,
+        COALESCE(oc.status_since, oc.updated_ts) AS since,
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(oc.status_since, oc.updated_ts))) / 60.0 AS mins,
+        COALESCE(
+            json_agg(json_build_object('name', COALESCE(NULLIF(oi.name,''),'(sin nombre)'), 'quantity', oi.quantity) ORDER BY oi.name)
+            FILTER (WHERE oi.order_product_id IS NOT NULL), '[]'::json
+        ) AS products
+    FROM orders_current oc
+    LEFT JOIN order_items oi ON oi.order_id = oc.order_id
+    WHERE oc.status = ANY(%s)
+      AND oc.status <> ALL(%s)
+      AND COALESCE(oc.status_since, oc.updated_ts) < %s
+    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts
+    ORDER BY since ASC
+    LIMIT %s
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (active_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff, limit))
+            rows = cur.fetchall()
+    return {
+        "count": len(rows),
+        "hours": hours,
+        "orders": [{"order_id": r[0], "status": r[1], "since": r[2].isoformat(),
+                    "mins": round(float(r[3]), 0), "products": r[4]} for r in rows]
+    }
+
+
+# ===============================
+# COMPARATIVA SEMANAS
+# ===============================
+@app.get("/api/weekly-comparison")
+def weekly_comparison():
+    """Pedidos despachados por día: semana actual vs semana anterior."""
+    now_local = datetime.now(LOCAL_TZ)
+    # Inicio de esta semana (lunes)
+    days_since_monday = now_local.weekday()
+    this_monday = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ) - timedelta(days=days_since_monday)
+    last_monday = this_monday - timedelta(days=7)
+
+    q = """
+    SELECT
+        (event_ts::timestamptz AT TIME ZONE %s)::date AS day_local,
+        COUNT(DISTINCT order_id)::int AS shipped
+    FROM order_events
+    WHERE status = ANY(%s)
+      AND status <> ALL(%s)
+      AND event_ts::timestamptz >= %s
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], last_monday))
+            rows = cur.fetchall()
+
+    by_date = {str(r[0]): r[1] for r in rows}
+    days_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+    result = []
+    for i in range(7):
+        this_day  = (this_monday + timedelta(days=i)).date()
+        last_day  = (last_monday + timedelta(days=i)).date()
+        result.append({
+            "weekday":    days_es[i],
+            "this_week":  by_date.get(str(this_day), 0),
+            "last_week":  by_date.get(str(last_day), 0),
+        })
+    return result
+
+
+# ===============================
+# HORA PICO
+# ===============================
+@app.get("/api/peak-hours")
+def peak_hours(days: int = 7):
+    """Distribución de despachos por hora del día en los últimos N días."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    q = """
+    SELECT
+        EXTRACT(HOUR FROM event_ts::timestamptz AT TIME ZONE %s)::int AS hour_of_day,
+        COUNT(DISTINCT order_id)::int AS shipped
+    FROM order_events
+    WHERE status = ANY(%s)
+      AND status <> ALL(%s)
+      AND event_ts::timestamptz >= %s
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], since))
+            rows = cur.fetchall()
+    by_hour = {r[0]: r[1] for r in rows}
+    return [{"hour": h, "shipped": by_hour.get(h, 0)} for h in range(24)]
+
+
+# ===============================
+# TASA DE CANCELACIÓN
+# ===============================
+@app.get("/api/cancellation-rate")
+def cancellation_rate(days: int = 7):
+    """Pedidos cancelados vs total por día en los últimos N días."""
+    since_utc = datetime.now(timezone.utc) - timedelta(days=days)
+    q = """
+    SELECT
+        (COALESCE(om.date_confirmed, om.date_add) AT TIME ZONE %s)::date AS day_local,
+        COUNT(DISTINCT oc.order_id)::int AS total,
+        COUNT(DISTINCT CASE WHEN oc.status = ANY(%s) THEN oc.order_id END)::int AS cancelled
+    FROM orders_current oc
+    JOIN orders_meta om ON om.order_id = oc.order_id
+    WHERE COALESCE(om.date_confirmed, om.date_add) >= %s
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    cancelled_statuses = ["Cancelado"]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, cancelled_statuses, since_utc))
+            rows = cur.fetchall()
+    return [{"day": str(r[0]), "total": r[1], "cancelled": r[2],
+             "rate": round(r[2]/r[1]*100, 1) if r[1] > 0 else 0} for r in rows]
+
+
+# ===============================
+# PEDIDOS QUE VOLVIERON ATRÁS
+# ===============================
+@app.get("/api/backtracked-orders")
+def backtracked_orders(days: int = 7, limit: int = 50):
+    """Pedidos que pasaron de un estado avanzado a uno anterior."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    bucket_order = {
+        "NUEVOS": 1, "RECEPCION": 2, "PREPARACION": 3,
+        "EMBALADO": 4, "DESPACHO": 5, "ENVIADO": 6, "ENTREGADO": 7
+    }
+
+    def bucket_of(status):
+        for bucket, statuses in STATUS_MAP.items():
+            if status in statuses:
+                return bucket
+        return None
+
+    q = """
+    SELECT order_id, status, event_ts::timestamptz
+    FROM order_events
+    WHERE event_ts::timestamptz >= %s
+      AND status <> ALL(%s)
+    ORDER BY order_id, event_ts ASC
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (since, EXCLUDED_STATUSES or ["__never__"]))
+            rows = cur.fetchall()
+
+    from collections import defaultdict
+    order_events_map = defaultdict(list)
+    for r in rows:
+        order_events_map[r[0]].append((r[1], r[2]))
+
+    backtracked = []
+    for order_id, events in order_events_map.items():
+        max_bucket_seen = 0
+        for status, ts in events:
+            b = bucket_of(status)
+            if b is None:
+                continue
+            level = bucket_order.get(b, 0)
+            if level < max_bucket_seen and max_bucket_seen >= 3:
+                backtracked.append({
+                    "order_id": order_id,
+                    "status":   status,
+                    "ts":       ts.isoformat(),
+                })
+                break
+            max_bucket_seen = max(max_bucket_seen, level)
+
+    backtracked.sort(key=lambda x: x["ts"], reverse=True)
+    return {"count": len(backtracked), "orders": backtracked[:limit]}
+
+
+# ===============================
+# TIEMPO HASTA PRIMER MOVIMIENTO
+# ===============================
+@app.get("/api/time-to-first-move")
+def time_to_first_move(days: int = 7):
+    """Tiempo promedio desde confirmación hasta que el pedido entra a preparación."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    prep_all = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"]
+    q = """
+    WITH first_prep AS (
+        SELECT order_id, MIN(event_ts::timestamptz) AS first_prep_ts
+        FROM order_events
+        WHERE status = ANY(%s)
+          AND event_ts::timestamptz >= %s
+        GROUP BY order_id
+    )
+    SELECT
+        ROUND(AVG(EXTRACT(EPOCH FROM (fp.first_prep_ts - COALESCE(om.date_confirmed, om.date_add))) / 60.0)::numeric, 1) AS avg_mins,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (fp.first_prep_ts - COALESCE(om.date_confirmed, om.date_add))) / 60.0
+        )::numeric, 1) AS median_mins,
+        COUNT(*)::int AS sample
+    FROM first_prep fp
+    JOIN orders_meta om ON om.order_id = fp.order_id
+    WHERE COALESCE(om.date_confirmed, om.date_add) IS NOT NULL
+      AND fp.first_prep_ts > COALESCE(om.date_confirmed, om.date_add)
+      AND EXTRACT(EPOCH FROM (fp.first_prep_ts - COALESCE(om.date_confirmed, om.date_add))) / 60.0 < 1440
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (prep_all, since))
+            r = cur.fetchone()
+    return {
+        "avg_mins":    float(r[0]) if r[0] else 0,
+        "median_mins": float(r[1]) if r[1] else 0,
+        "sample":      r[2] or 0,
+    }
+
 # ===============================
 # FRONT
 # ===============================
