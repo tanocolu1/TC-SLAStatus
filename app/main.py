@@ -547,13 +547,15 @@ def _run_sync() -> dict:
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
          AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
-      (SELECT COUNT(*) FROM bucketed
-       WHERE bucket = ANY(%(active_buckets)s)
-         AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
+      (SELECT COUNT(*) FROM orders_current
+       WHERE status = ANY(%(prep_all)s)
+         AND status <> ALL(%(excluidos)s)
+         AND COALESCE(status_since, updated_ts) < %(late_cutoff)s)     AS atrasados_24h,
       (SELECT COALESCE(
-         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
-       ) FROM bucketed
-       WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
+         AVG(EXTRACT(EPOCH FROM (NOW() - COALESCE(oc2.status_since, oc2.updated_ts))) / 60.0), 0
+       ) FROM orders_current oc2
+       WHERE oc2.status = ANY(%(prep_all)s)
+         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min
     """
 
     kpi_params = {
@@ -567,6 +569,7 @@ def _run_sync() -> dict:
         "cerr":           STATUS_MAP["CERRADOS"],
         "excluidos":      EXCLUDED_STATUSES or ["__never__"],
         "active_buckets": ACTIVE_BUCKETS,
+        "prep_all":       STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"],
         "late_cutoff":    late_cutoff,
         "today_start":    today_start,
     }
@@ -818,13 +821,15 @@ def cleanup_snapshots():
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
          AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
-      (SELECT COUNT(*) FROM bucketed
-       WHERE bucket = ANY(%(active_buckets)s)
-         AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
+      (SELECT COUNT(*) FROM orders_current
+       WHERE status = ANY(%(prep_all)s)
+         AND status <> ALL(%(excluidos)s)
+         AND COALESCE(status_since, updated_ts) < %(late_cutoff)s)     AS atrasados_24h,
       (SELECT COALESCE(
-         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
-       ) FROM bucketed
-       WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
+         AVG(EXTRACT(EPOCH FROM (NOW() - COALESCE(oc2.status_since, oc2.updated_ts))) / 60.0), 0
+       ) FROM orders_current oc2
+       WHERE oc2.status = ANY(%(prep_all)s)
+         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min
     """
 
     kpi_params = {
@@ -838,6 +843,7 @@ def cleanup_snapshots():
         "cerr":           STATUS_MAP["CERRADOS"],
         "excluidos":      EXCLUDED_STATUSES or ["__never__"],
         "active_buckets": ACTIVE_BUCKETS,
+        "prep_all":       STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"],
         "late_cutoff":    late_cutoff,
         "today_start":    today_start,
     }
