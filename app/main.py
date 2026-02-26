@@ -455,7 +455,6 @@ def _run_sync() -> dict:
     now         = datetime.now(timezone.utc)
     now_local   = datetime.now(LOCAL_TZ)
     today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
-    today_end   = today_start + timedelta(days=1)
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
@@ -490,14 +489,10 @@ def _run_sync() -> dict:
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(DISTINCT oe.order_id)
-       FROM order_events oe
-       JOIN orders_meta om ON om.order_id = oe.order_id
-       WHERE oe.status = ANY(%(env)s)
-         AND oe.status <> ALL(%(excluidos)s)
-         AND COALESCE(om.date_confirmed, om.date_add)::timestamptz >= %(today_start)s
-         AND COALESCE(om.date_confirmed, om.date_add)::timestamptz < %(today_end)s
-      )                                                                AS despachados_hoy,
+      (SELECT COUNT(DISTINCT order_id) FROM order_events
+       WHERE status = ANY(%(env)s)
+         AND status <> ALL(%(excluidos)s)
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
@@ -520,7 +515,6 @@ def _run_sync() -> dict:
         "active_buckets": ACTIVE_BUCKETS,
         "late_cutoff":    late_cutoff,
         "today_start":    today_start,
-        "today_end":      today_end,
     }
 
     try:
@@ -565,6 +559,35 @@ def sync(request: Request):
 # ===============================
 # DIAGNÓSTICO (temporal)
 # ===============================
+@app.post("/api/debug/limpiar-enviados")
+def limpiar_enviados_iniciales():
+    """Borra eventos 'Enviado' del sync inicial (antes de las 08:00 ARG de hoy)."""
+    from datetime import datetime
+    now_local    = datetime.now(LOCAL_TZ)
+    today_8am    = datetime(now_local.year, now_local.month, now_local.day, 8, 0, 0, tzinfo=LOCAL_TZ)
+    today_start  = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM order_events
+                WHERE status = ANY(%s)
+                  AND event_ts::timestamptz >= %s
+                  AND event_ts::timestamptz < %s
+            """, (STATUS_MAP["ENVIADO"], today_start, today_8am))
+            to_delete = cur.fetchone()[0]
+
+            cur.execute("""
+                DELETE FROM order_events
+                WHERE status = ANY(%s)
+                  AND event_ts::timestamptz >= %s
+                  AND event_ts::timestamptz < %s
+            """, (STATUS_MAP["ENVIADO"], today_start, today_8am))
+        conn.commit()
+
+    return JSONResponse({"deleted": to_delete, "cutoff": today_8am.isoformat()})
+
+
 @app.get("/api/debug/enviados")
 def debug_enviados():
     from datetime import datetime
@@ -673,7 +696,6 @@ def cleanup_snapshots():
     now         = datetime.now(timezone.utc)
     now_local   = datetime.now(LOCAL_TZ)
     today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
-    today_end   = today_start + timedelta(days=1)
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
@@ -707,14 +729,10 @@ def cleanup_snapshots():
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(DISTINCT oe.order_id)
-       FROM order_events oe
-       JOIN orders_meta om ON om.order_id = oe.order_id
-       WHERE oe.status = ANY(%(env)s)
-         AND oe.status <> ALL(%(excluidos)s)
-         AND COALESCE(om.date_confirmed, om.date_add)::timestamptz >= %(today_start)s
-         AND COALESCE(om.date_confirmed, om.date_add)::timestamptz < %(today_end)s
-      )                                                                AS despachados_hoy,
+      (SELECT COUNT(DISTINCT order_id) FROM order_events
+       WHERE status = ANY(%(env)s)
+         AND status <> ALL(%(excluidos)s)
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
@@ -737,7 +755,6 @@ def cleanup_snapshots():
         "active_buckets": ACTIVE_BUCKETS,
         "late_cutoff":    late_cutoff,
         "today_start":    today_start,
-        "today_end":      today_end,
     }
 
     with get_conn() as conn:
