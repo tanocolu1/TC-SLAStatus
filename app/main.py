@@ -84,7 +84,49 @@ def bl_call(method: str, params: dict):
 # ===============================
 @app.on_event("startup")
 def ensure_schema():
+    # IMPORTANTE: no crear índices acá (puede tardar y tirar 502).
+    # Solo aseguramos tablas chicas.
     with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_current (
+                  order_id TEXT PRIMARY KEY,
+                  status TEXT NOT NULL,
+                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_meta (
+                  order_id TEXT PRIMARY KEY,
+                  date_confirmed TIMESTAMPTZ NULL,
+                  date_add TIMESTAMPTZ NULL,
+                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_items (
+                  order_product_id BIGINT PRIMARY KEY,
+                  order_id TEXT NOT NULL,
+                  sku TEXT NULL,
+                  name TEXT NULL,
+                  quantity INT NOT NULL DEFAULT 0,
+                  price_brutto DOUBLE PRECISION NULL,
+                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            # Esta ya la creaste por UI; la dejamos por seguridad.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_kpi_snapshot (
+                  id BIGSERIAL PRIMARY KEY,
+                  snapshot_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  en_preparacion INT NOT NULL,
+                  embalados INT NOT NULL,
+                  en_despacho INT NOT NULL,
+                  despachados_hoy INT NOT NULL,
+                  atrasados_24h INT NOT NULL,
+                  avg_age_min DOUBLE PRECISION NOT NULL
+                );
+            """)
         with conn.cursor() as cur:
             # (1) Estado actual por pedido (dedupe)
             cur.execute(
