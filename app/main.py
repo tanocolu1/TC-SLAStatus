@@ -567,7 +567,7 @@ def debug():
             cur.execute("""
                 SELECT snapshot_ts, en_preparacion, embalados, en_despacho, despachados_hoy
                 FROM orders_kpi_snapshot
-                ORDER BY snapshot_ts DESC
+                ORDER BY id DESC
                 LIMIT 3
             """)
             result["snapshots"] = [
@@ -713,7 +713,7 @@ def metrics():
                 SELECT en_preparacion, embalados, en_despacho,
                        despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts
                 FROM orders_kpi_snapshot
-                ORDER BY snapshot_ts DESC
+                ORDER BY id DESC
                 LIMIT 1
                 """
             )
