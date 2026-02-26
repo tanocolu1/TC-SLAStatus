@@ -158,6 +158,82 @@ def sync(request: Request):
                         (order_id, status_name)
                     )
                     events_inserted += 1
+                    # ===============================
+# Guardar snapshot KPI
+# ===============================
+from datetime import datetime, timezone
+
+with get_conn() as conn:
+    with conn.cursor() as cur:
+        now = datetime.now(timezone.utc)
+        today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        late_cutoff = now - timedelta(hours=24)
+
+        q = """
+        WITH latest AS (
+          SELECT DISTINCT ON (order_id)
+            order_id, status, event_ts
+          FROM order_events
+          ORDER BY order_id, event_ts DESC
+        ),
+        current AS (
+          SELECT
+            order_id,
+            status,
+            event_ts,
+            CASE
+              WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
+              WHEN status = ANY(%(recep)s) THEN 'RECEPCION'
+              WHEN status = ANY(%(prep)s) THEN 'PREPARACION'
+              WHEN status = ANY(%(pack)s) THEN 'EMBALADO'
+              WHEN status = ANY(%(desp)s) THEN 'DESPACHO'
+              WHEN status = ANY(%(env)s) THEN 'ENVIADO'
+              WHEN status = ANY(%(ent)s) THEN 'ENTREGADO'
+              WHEN status = ANY(%(cerr)s) THEN 'CERRADOS'
+              ELSE 'OTROS'
+            END AS bucket
+          FROM latest
+        )
+        SELECT
+          (SELECT COUNT(*) FROM current WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION')),
+          (SELECT COUNT(*) FROM current WHERE bucket='EMBALADO'),
+          (SELECT COUNT(*) FROM current WHERE bucket='DESPACHO'),
+          (SELECT COUNT(*) FROM order_events WHERE status = ANY(%(env)s) AND event_ts >= %(today_start)s),
+          (SELECT COUNT(*) FROM current WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO') AND event_ts < %(late_cutoff)s),
+          (SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)))/60.0, 0)
+            FROM current
+            WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
+          )
+        ;
+        """
+
+        params = {
+            "nuevos": STATUS_MAP["NUEVOS"],
+            "recep": STATUS_MAP["RECEPCION"],
+            "prep": STATUS_MAP["PREPARACION"],
+            "pack": STATUS_MAP["EMBALADO"],
+            "desp": STATUS_MAP["DESPACHO"],
+            "env": STATUS_MAP["ENVIADO"],
+            "ent": STATUS_MAP["ENTREGADO"],
+            "cerr": STATUS_MAP["CERRADOS"],
+            "late_cutoff": late_cutoff,
+            "today_start": today_start,
+        }
+
+        cur.execute(q, params)
+        row = cur.fetchone()
+
+        cur.execute("""
+            INSERT INTO orders_kpi_snapshot(
+                en_preparacion,
+                embalados,
+                en_despacho,
+                despachados_hoy,
+                atrasados_24h,
+                avg_age_min
+            )
+            VALUES (%s,%s,%s,%s,%s,%s)
+        """, row)
 
     return {"ok": True, "orders_received": len(orders), "changed": changed, "events_inserted": events_inserted}
 
@@ -167,84 +243,44 @@ def sync(request: Request):
 # ===============================
 @app.get("/api/metrics")
 def metrics():
-    now = datetime.now(timezone.utc)
-    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    late_cutoff = now - timedelta(hours=24)
-
-    q = """
-    WITH latest AS (
-      SELECT DISTINCT ON (order_id)
-        order_id, status, event_ts
-      FROM order_events
-      ORDER BY order_id, event_ts DESC
-    ),
-    current AS (
-      SELECT
-        order_id,
-        status,
-        event_ts,
-        CASE
-          WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
-          WHEN status = ANY(%(recep)s) THEN 'RECEPCION'
-          WHEN status = ANY(%(prep)s) THEN 'PREPARACION'
-          WHEN status = ANY(%(pack)s) THEN 'EMBALADO'
-          WHEN status = ANY(%(desp)s) THEN 'DESPACHO'
-          WHEN status = ANY(%(env)s) THEN 'ENVIADO'
-          WHEN status = ANY(%(ent)s) THEN 'ENTREGADO'
-          WHEN status = ANY(%(cerr)s) THEN 'CERRADOS'
-          ELSE 'OTROS'
-        END AS bucket
-      FROM latest
-    ),
-    shipped_today AS (
-      SELECT COUNT(*) AS c
-      FROM order_events
-      WHERE status = ANY(%(env)s)
-        AND event_ts::timestamptz >= %(today_start)s
-    )
-    SELECT
-      (SELECT COUNT(*) FROM current WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION')) AS en_preparacion,
-      (SELECT COUNT(*) FROM current WHERE bucket='EMBALADO') AS embalados,
-      (SELECT COUNT(*) FROM current WHERE bucket='DESPACHO') AS en_despacho,
-      (SELECT c FROM shipped_today) AS despachados_hoy,
-      (SELECT COUNT(*) FROM current
-        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
-          AND event_ts::timestamptz < %(late_cutoff)s
-      ) AS atrasados_24h,
-      (SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)))/60.0, 0)
-        FROM current
-        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
-      ) AS avg_age_min
-    ;
-    """
-
-    params = {
-        "nuevos": STATUS_MAP["NUEVOS"],
-        "recep": STATUS_MAP["RECEPCION"],
-        "prep": STATUS_MAP["PREPARACION"],
-        "pack": STATUS_MAP["EMBALADO"],
-        "desp": STATUS_MAP["DESPACHO"],
-        "env": STATUS_MAP["ENVIADO"],
-        "ent": STATUS_MAP["ENTREGADO"],
-        "cerr": STATUS_MAP["CERRADOS"],
-        "late_cutoff": late_cutoff,
-        "today_start": today_start,
-    }
-
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, params)
+            cur.execute("""
+                SELECT
+                    en_preparacion,
+                    embalados,
+                    en_despacho,
+                    despachados_hoy,
+                    atrasados_24h,
+                    avg_age_min,
+                    snapshot_ts
+                FROM orders_kpi_snapshot
+                ORDER BY snapshot_ts DESC
+                LIMIT 1
+            """)
             row = cur.fetchone()
 
+    if not row:
+        return JSONResponse({
+            "en_preparacion": 0,
+            "embalados": 0,
+            "en_despacho": 0,
+            "despachados_hoy": 0,
+            "atrasados_24h": 0,
+            "avg_age_min": 0,
+            "refresh_seconds": REFRESH_SECONDS,
+            "server_time_utc": datetime.now(timezone.utc).isoformat()
+        })
+
     return JSONResponse({
-        "en_preparacion": int(row[0] or 0),
-        "embalados": int(row[1] or 0),
-        "en_despacho": int(row[2] or 0),
-        "despachados_hoy": int(row[3] or 0),
-        "atrasados_24h": int(row[4] or 0),
-        "avg_age_min": float(row[5] or 0.0),
+        "en_preparacion": row[0],
+        "embalados": row[1],
+        "en_despacho": row[2],
+        "despachados_hoy": row[3],
+        "atrasados_24h": row[4],
+        "avg_age_min": float(row[5] or 0),
         "refresh_seconds": REFRESH_SECONDS,
-        "server_time_utc": now.isoformat()
+        "server_time_utc": row[6].isoformat()
     })
 
 
