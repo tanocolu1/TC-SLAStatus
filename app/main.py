@@ -451,71 +451,71 @@ def _run_sync() -> dict:
         events_inserted += be
         errors          += berr
 
-        # 4) Snapshot KPI — fuera del loop de pedidos
-        now         = datetime.now(timezone.utc)
-        today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        late_cutoff = now - timedelta(hours=24)
+    # 4) Snapshot KPI — una sola vez, después de que todos los batches se grabaron
+    now         = datetime.now(timezone.utc)
+    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    late_cutoff = now - timedelta(hours=24)
 
-        kpi_sql = """
-        WITH latest AS (
-          SELECT DISTINCT ON (order_id)
-            order_id, status, event_ts
-          FROM order_events
-          -- Excluir estados ignorados antes de calcular cualquier métrica
-          WHERE status <> ALL(%(excluidos)s)
-          ORDER BY order_id, event_ts::timestamptz DESC
-        ),
-        bucketed AS (
-          SELECT
-            order_id,
-            event_ts::timestamptz AS event_ts,
-            CASE
-              WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
-              WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
-              WHEN status = ANY(%(prep)s)   THEN 'PREPARACION'
-              WHEN status = ANY(%(pack)s)   THEN 'EMBALADO'
-              WHEN status = ANY(%(desp)s)   THEN 'DESPACHO'
-              WHEN status = ANY(%(env)s)    THEN 'ENVIADO'
-              WHEN status = ANY(%(ent)s)    THEN 'ENTREGADO'
-              WHEN status = ANY(%(cerr)s)   THEN 'CERRADOS'
-              ELSE 'OTROS'
-            END AS bucket
-          FROM latest
-        )
-        SELECT
-          (SELECT COUNT(*) FROM bucketed
-           WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
-          (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
-          (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-          (SELECT COUNT(DISTINCT order_id) FROM order_events
-           WHERE status = ANY(%(env)s)
-             AND status <> ALL(%(excluidos)s)
-             AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
-          (SELECT COUNT(*) FROM bucketed
-           WHERE bucket = ANY(%(active_buckets)s)
-             AND event_ts::timestamptz < %(late_cutoff)s)                  AS atrasados_24h,
-          (SELECT COALESCE(
-             AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
-           ) FROM bucketed
-           WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
-        """
+    kpi_sql = """
+    WITH latest AS (
+      SELECT DISTINCT ON (order_id)
+        order_id, status, event_ts
+      FROM order_events
+      WHERE status <> ALL(%(excluidos)s)
+      ORDER BY order_id, event_ts::timestamptz DESC
+    ),
+    bucketed AS (
+      SELECT
+        order_id,
+        event_ts::timestamptz AS event_ts,
+        CASE
+          WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
+          WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
+          WHEN status = ANY(%(prep)s)   THEN 'PREPARACION'
+          WHEN status = ANY(%(pack)s)   THEN 'EMBALADO'
+          WHEN status = ANY(%(desp)s)   THEN 'DESPACHO'
+          WHEN status = ANY(%(env)s)    THEN 'ENVIADO'
+          WHEN status = ANY(%(ent)s)    THEN 'ENTREGADO'
+          WHEN status = ANY(%(cerr)s)   THEN 'CERRADOS'
+          ELSE 'OTROS'
+        END AS bucket
+      FROM latest
+    )
+    SELECT
+      (SELECT COUNT(*) FROM bucketed
+       WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
+      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
+      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
+      (SELECT COUNT(DISTINCT order_id) FROM order_events
+       WHERE status = ANY(%(env)s)
+         AND status <> ALL(%(excluidos)s)
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
+      (SELECT COUNT(*) FROM bucketed
+       WHERE bucket = ANY(%(active_buckets)s)
+         AND event_ts::timestamptz < %(late_cutoff)s)                  AS atrasados_24h,
+      (SELECT COALESCE(
+         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
+       ) FROM bucketed
+       WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
+    """
 
-        kpi_params = {
-            "nuevos":         STATUS_MAP["NUEVOS"],
-            "recep":          STATUS_MAP["RECEPCION"],
-            "prep":           STATUS_MAP["PREPARACION"],
-            "pack":           STATUS_MAP["EMBALADO"],
-            "desp":           STATUS_MAP["DESPACHO"],
-            "env":            STATUS_MAP["ENVIADO"],
-            "ent":            STATUS_MAP["ENTREGADO"],
-            "cerr":           STATUS_MAP["CERRADOS"],
-            "excluidos":      EXCLUDED_STATUSES or ["__never__"],  # evitar array vacío en ANY()
-            "active_buckets": ACTIVE_BUCKETS,
-            "late_cutoff":    late_cutoff,
-            "today_start":    today_start,
-        }
+    kpi_params = {
+        "nuevos":         STATUS_MAP["NUEVOS"],
+        "recep":          STATUS_MAP["RECEPCION"],
+        "prep":           STATUS_MAP["PREPARACION"],
+        "pack":           STATUS_MAP["EMBALADO"],
+        "desp":           STATUS_MAP["DESPACHO"],
+        "env":            STATUS_MAP["ENVIADO"],
+        "ent":            STATUS_MAP["ENTREGADO"],
+        "cerr":           STATUS_MAP["CERRADOS"],
+        "excluidos":      EXCLUDED_STATUSES or ["__never__"],
+        "active_buckets": ACTIVE_BUCKETS,
+        "late_cutoff":    late_cutoff,
+        "today_start":    today_start,
+    }
 
-        try:
+    try:
+        with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(kpi_sql, kpi_params)
                 kpi = cur.fetchone()
@@ -529,9 +529,9 @@ def _run_sync() -> dict:
                     kpi,
                 )
             conn.commit()
-        except Exception as exc:
-            logger.error("Error guardando snapshot KPI: %s", exc)
-            conn.rollback()
+            logger.info("Snapshot KPI grabado: %s", kpi)
+    except Exception as exc:
+        logger.error("Error guardando snapshot KPI: %s", exc)
 
     return {
         "ok":              True,
