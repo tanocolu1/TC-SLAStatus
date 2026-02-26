@@ -762,10 +762,16 @@
       el.textContent = text;
     }
 
-    async function fetchJson(url) {
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error(`${url} → ${res.status}`);
-      return res.json();
+    async function fetchJson(url, timeoutMs = 8000) {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+        if (!res.ok) throw new Error(`${url} → ${res.status}`);
+        return res.json();
+      } finally {
+        clearTimeout(tid);
+      }
     }
 
     // ─── Renderers ─────────────────────────────────────────────────────────────
@@ -907,8 +913,8 @@
     // FIX: el intervalo de KPI ahora viene del servidor (refresh_seconds),
     // no está hardcodeado en 10 s.
 
-    const TOPS_EVERY = 6;   // tops se recargan cada 6 × kpiInterval
-    let kpiIntervalMs = 10_000;
+    const TOPS_EVERY = IS_TV ? 2 : 6;  // en TV tops cada 2 ciclos
+    let kpiIntervalMs = IS_TV ? 30_000 : 10_000;
     let kpiTimer      = null;
     let topsCounter   = 0;
     let lastSuccess   = null;  // timestamp del último fetch exitoso
@@ -1029,7 +1035,8 @@
     }
 
     async function refreshTops() {
-      await Promise.all([refreshAlerts(), refreshProductivity(), refreshStageTimes()]);
+      await refreshAlerts();
+      if (!IS_TV) await Promise.all([refreshProductivity(), refreshStageTimes()]);
       try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
