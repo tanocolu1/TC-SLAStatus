@@ -522,9 +522,9 @@ def _run_sync() -> dict:
                 cur.execute(
                     """
                     INSERT INTO orders_kpi_snapshot(
-                      en_preparacion, embalados, en_despacho,
+                      snapshot_ts, en_preparacion, embalados, en_despacho,
                       despachados_hoy, atrasados_24h, avg_age_min
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s)
                     """,
                     kpi,
                 )
@@ -699,9 +699,9 @@ def cleanup_snapshots():
             cur.execute(
                 """
                 INSERT INTO orders_kpi_snapshot(
-                  en_preparacion, embalados, en_despacho,
+                  snapshot_ts, en_preparacion, embalados, en_despacho,
                   despachados_hoy, atrasados_24h, avg_age_min
-                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ) VALUES (NOW(), %s, %s, %s, %s, %s, %s)
                 RETURNING id, snapshot_ts
                 """,
                 kpi,
