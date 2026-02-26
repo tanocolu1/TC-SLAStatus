@@ -982,6 +982,58 @@ def packers_hourly(hours: int = 24):
     return [{"hour": r[0].isoformat(), "packer": r[1], "orders_packed": r[2]} for r in rows]
 
 
+
+# ===============================
+# PEDIDOS PENDIENTES (listado realtime)
+# ===============================
+@app.get("/api/pending-orders")
+def pending_orders(limit: int = 200):
+    active_statuses = (
+        STATUS_MAP["NUEVOS"] +
+        STATUS_MAP["RECEPCION"] +
+        STATUS_MAP["PREPARACION"] +
+        STATUS_MAP["EMBALADO"] +
+        STATUS_MAP["DESPACHO"]
+    )
+    q = """
+    SELECT
+        oc.order_id,
+        oc.status,
+        oc.updated_ts,
+        EXTRACT(EPOCH FROM (NOW() - oc.updated_ts)) / 60.0 AS mins_in_status,
+        COALESCE(
+            json_agg(
+                json_build_object(
+                    'sku',      COALESCE(NULLIF(oi.sku, ''), '(sin sku)'),
+                    'name',     COALESCE(NULLIF(oi.name, ''), '(sin nombre)'),
+                    'quantity', oi.quantity
+                ) ORDER BY oi.name
+            ) FILTER (WHERE oi.order_product_id IS NOT NULL),
+            '[]'::json
+        ) AS products
+    FROM orders_current oc
+    LEFT JOIN order_items oi ON oi.order_id = oc.order_id
+    WHERE oc.status = ANY(%s)
+      AND oc.status <> ALL(%s)
+    GROUP BY oc.order_id, oc.status, oc.updated_ts
+    ORDER BY oc.updated_ts ASC
+    LIMIT %s
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (active_statuses, EXCLUDED_STATUSES or ["__never__"], limit))
+            rows = cur.fetchall()
+    return [
+        {
+            "order_id":       r[0],
+            "status":         r[1],
+            "updated_ts":     r[2].isoformat(),
+            "mins_in_status": round(float(r[3]), 0),
+            "products":       r[4],
+        }
+        for r in rows
+    ]
+
 # ===============================
 # FRONT
 # ===============================

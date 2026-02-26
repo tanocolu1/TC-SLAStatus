@@ -262,6 +262,91 @@
       .grid-bottom{ grid-template-columns: 1fr; }
       .flow-row{ grid-template-columns: 100px 1fr 48px; }
     }
+
+    /* ── Pedidos pendientes ─────────────────────────────────── */
+    .pending-filters {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .filter-btn {
+      padding: 5px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .filter-btn.active {
+      background: rgba(56,139,253,.18);
+      border-color: rgba(56,139,253,.5);
+      color: #58a6ff;
+    }
+    .pending-search {
+      flex: 1;
+      min-width: 180px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    .pending-search:focus { border-color: rgba(56,139,253,.5); }
+    .pending-table-wrap {
+      max-height: 460px;
+      overflow-y: auto;
+    }
+    .pending-table-wrap table { width: 100%; border-collapse: collapse; }
+    .pending-table-wrap th {
+      position: sticky;
+      top: 0;
+      background: var(--card);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+    }
+    .pending-table-wrap td {
+      padding: 8px 10px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    .pending-table-wrap tr:last-child td { border-bottom: none; }
+    .pending-table-wrap tr:hover td { background: rgba(255,255,255,.03); }
+    .order-id { font-weight: 600; color: #58a6ff; font-family: monospace; font-size: 13px; }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .status-prep  { background: rgba(56,139,253,.15); color:#58a6ff; }
+    .status-embal { background: rgba(255,193,7,.15);  color:#ffc107; }
+    .status-desp  { background: rgba(56,211,159,.15); color:#3dd68c; }
+    .products-list { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    .mins-badge {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 8px;
+      white-space: nowrap;
+    }
+    .mins-ok   { background: rgba(56,211,159,.12); color:#3dd68c; }
+    .mins-warn { background: rgba(224,168,0,.12);  color:#e0a800; }
+    .mins-bad  { background: rgba(214,69,69,.15);  color:#d64545; }
+    .card-wide { grid-column: 1 / -1; }
+
   </style>
 </head>
 <body>
@@ -366,6 +451,20 @@
       </div>
     </div>
 
+
+    <div class="card card-wide" style="margin-top:16px">
+      <div class="card-title">
+        <div>Pedidos activos <span id="pendingCount"></span></div>
+        <span class="muted" id="pendingMeta">—</span>
+          <div class="pending-filters">
+        <input class="pending-search" id="pendingSearch" type="text" placeholder="Buscar por pedido, producto o SKU…" oninput="filterPending()">
+        <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">Todos</button>
+        <button class="filter-btn" data-filter="prep" onclick="setFilter('prep',this)">Preparación</button>
+        <button class="filter-btn" data-filter="embal" onclick="setFilter('embal',this)">Embalado</button>
+        <button class="filter-btn" data-filter="desp" onclick="setFilter('desp',this)">Despacho</button>
+          <div class="pending-table-wrap" id="pendingTableWrap">
+        <div class="empty">Cargando…</div>
+      
     <div class="grid-bottom">
       <div class="card">
         <div class="card-title">
@@ -653,6 +752,7 @@
     }
 
     async function refreshTops() {
+      await refreshPending();
       try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
@@ -672,6 +772,107 @@
       }
     }
 
+
+    // ── Pedidos pendientes ─────────────────────────────────────────────────────
+    let pendingData = [];
+    let activeFilter = 'all';
+    const PREP_STATUSES  = ["Turbo","Flex","Colecta","Recolectando","Nuevos pedidos","Agendados","A distribuir","error de etiqueta"];
+    const EMBAL_STATUSES = ["Puesto 1","Puesto 2","Puesto 3","Puesto 4","Puesto 5","Puesto 6","Embalado"];
+    const DESP_STATUSES  = ["Mercado Envíos","Logística propia","Blitzz","Zeta","Eliazar","Federico"];
+
+    function statusClass(status) {
+      if (PREP_STATUSES.includes(status))  return 'status-prep';
+      if (EMBAL_STATUSES.includes(status)) return 'status-embal';
+      if (DESP_STATUSES.includes(status))  return 'status-desp';
+      return '';
+    }
+
+    function filterGroup(status) {
+      if (PREP_STATUSES.includes(status))  return 'prep';
+      if (EMBAL_STATUSES.includes(status)) return 'embal';
+      if (DESP_STATUSES.includes(status))  return 'desp';
+      return 'other';
+    }
+
+    function minsClass(mins) {
+      if (mins < 30)  return 'mins-ok';
+      if (mins < 120) return 'mins-warn';
+      return 'mins-bad';
+    }
+
+    function fmtMins(mins) {
+      if (mins < 60) return mins + ' min';
+      const h = Math.floor(mins / 60);
+      const m = Math.round(mins % 60);
+      return h + 'h ' + (m > 0 ? m + 'm' : '');
+    }
+
+    function setFilter(f, btn) {
+      activeFilter = f;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderPending();
+    }
+
+    function filterPending() { renderPending(); }
+
+    function renderPending() {
+      const q = ($('pendingSearch').value || '').toLowerCase();
+      const filtered = pendingData.filter(o => {
+        if (activeFilter !== 'all' && filterGroup(o.status) !== activeFilter) return false;
+        if (!q) return true;
+        if (o.order_id.includes(q)) return true;
+        return (o.products || []).some(p =>
+          (p.name || '').toLowerCase().includes(q) ||
+          (p.sku  || '').toLowerCase().includes(q)
+        );
+      });
+
+      $('pendingCount').textContent = '(' + filtered.length + ')';
+
+      if (filtered.length === 0) {
+        $('pendingTableWrap').innerHTML = '<div class="empty">Sin resultados.</div>';
+        return;
+      }
+
+      const rows = filtered.map(o => {
+        const prods = (o.products || []).map(p =>
+          `<span>${escapeHtml(p.name)} <b>×${p.quantity}</b>${p.sku && p.sku !== '(sin sku)' ? ' <span style="opacity:.6">['+escapeHtml(p.sku)+']</span>' : ''}</span>`
+        ).join('<br>');
+        return `<tr>
+          <td><span class="order-id">#${escapeHtml(o.order_id)}</span></td>
+          <td><span class="status-badge ${statusClass(o.status)}">${escapeHtml(o.status)}</span></td>
+          <td><span class="mins-badge ${minsClass(o.mins_in_status)}">${fmtMins(o.mins_in_status)}</span></td>
+          <td><div class="products-list">${prods || '<span style="opacity:.4">Sin productos</span>'}</div></td>
+        </tr>`;
+      }).join('');
+
+      $('pendingTableWrap').innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th style="width:110px">Pedido</th>
+              <th style="width:130px">Estado</th>
+              <th style="width:90px">Tiempo</th>
+              <th>Productos</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function refreshPending() {
+      try {
+        pendingData = await fetchJson('/api/pending-orders?limit=500');
+        renderPending();
+        $('pendingMeta').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) {
+        console.error('pending-orders error', e);
+        $('pendingTableWrap').innerHTML = '<div class="empty">Error cargando pedidos.</div>';
+      }
+    }
+
+
     // ── Arranque ───────────────────────────────────────────────────────────────
     // Primer render inmediato (incluyendo tops), luego arranca el loop
     (async () => {
@@ -686,6 +887,7 @@
         startKpiLoop(kpiIntervalMs); // arranca igual con default
       }
       await refreshTops();
+      await refreshPending();
     })();
   </script>
 </body>
