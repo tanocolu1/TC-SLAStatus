@@ -6,6 +6,12 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import psycopg
+import time
+import requests
+
+BL_API_URL = os.environ.get("BL_API_URL", "https://api.baselinker.com/connector.php")
+BL_TOKEN = os.environ.get("BL_TOKEN", "")
+SYNC_SECRET = os.environ.get("SYNC_SECRET", "")
 
 app = FastAPI()
 
@@ -148,3 +154,61 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 def home():
     with open("app/static/index.html", "r", encoding="utf-8") as f:
         return f.read()
+    @app.post("/sync")
+def sync(request: Request):
+    # Seguridad básica
+    if SYNC_SECRET:
+        incoming = request.headers.get("X-Sync-Secret")
+        if incoming != SYNC_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not BL_TOKEN:
+        raise HTTPException(status_code=500, detail="BL_TOKEN not configured")
+
+    now_ts = int(time.time())
+
+    # Traer órdenes desde el inicio (después optimizamos)
+    payload = {
+        "method": "getOrders",
+        "parameters": json.dumps({
+            "date_confirmed_from": 0
+        })
+    }
+
+    headers = {
+        "X-BLToken": BL_TOKEN
+    }
+
+    r = requests.post(BL_API_URL, headers=headers, data=payload, timeout=30)
+    data = r.json()
+
+    if data.get("status") != "SUCCESS":
+        raise HTTPException(status_code=500, detail=data)
+
+    orders = data.get("orders", [])
+
+    inserted = 0
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for o in orders:
+                order_id = str(o.get("order_id"))
+                status = o.get("order_status") or o.get("status") or ""
+
+                if not order_id or not status:
+                    continue
+
+                cur.execute(
+                    """
+                    INSERT INTO order_events(order_id, status, event_ts)
+                    VALUES (%s, %s, NOW())
+                    """,
+                    (order_id, status)
+                )
+                inserted += 1
+
+    return {
+        "ok": True,
+        "orders_received": len(orders),
+        "events_inserted": inserted
+    }
