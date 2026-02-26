@@ -167,7 +167,12 @@ def sync(request: Request):
     status_map = {int(s["id"]): s.get("name", str(s["id"])) for s in status_list if "id" in s}
 
     # 2) Traer órdenes (por ahora: desde 0; luego optimizamos con watermark)
-    data = bl_call("getOrders", {"date_confirmed_from": 0, "get_unconfirmed_orders": True})  # :contentReference[oaicite:2]{index=2}
+    seven_days_ago = int(time.time()) - (7 * 24 * 60 * 60)
+
+data = bl_call("getOrders", {
+    "date_confirmed_from": seven_days_ago,
+    "get_unconfirmed_orders": True
+}) # :contentReference[oaicite:2]{index=2}
     orders = data.get("orders", [])
 
     changed = 0
