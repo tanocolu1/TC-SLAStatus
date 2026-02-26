@@ -406,13 +406,19 @@ def _run_sync() -> dict:
                 date_confirmed = datetime.fromtimestamp(int(dc), tz=timezone.utc) if dc else None
                 date_add       = datetime.fromtimestamp(int(da), tz=timezone.utc) if da else None
 
+                # date_in_status: cuándo Baselinker dice que entró al estado actual
+                dis = o.get("date_in_status")
+                date_in_status = datetime.fromtimestamp(int(dis), tz=timezone.utc) if dis else None
+
                 meta_rows.append((order_id, date_confirmed, date_add))
-                current_rows.append((order_id, status_name))
+                current_rows.append((order_id, status_name, date_in_status))
 
                 prev_status = current_statuses.get(order_id)
                 if prev_status != status_name:
                     b_changed += 1
-                    event_rows.append((order_id, status_name))
+                    # Usar date_in_status como event_ts si está disponible
+                    event_ts = date_in_status or datetime.now(timezone.utc)
+                    event_rows.append((order_id, status_name, event_ts))
                     current_statuses[order_id] = status_name  # actualizar cache local
 
                 # --- items ---
@@ -456,12 +462,13 @@ def _run_sync() -> dict:
                     cur.executemany(
                         """
                         INSERT INTO orders_current(order_id, status, updated_ts, status_since)
-                        VALUES (%s, %s, NOW(), NOW())
+                        VALUES (%s, %s, NOW(), %s)
                         ON CONFLICT(order_id) DO UPDATE
                         SET updated_ts   = EXCLUDED.updated_ts,
                             status_since = CASE
-                              WHEN orders_current.status <> EXCLUDED.status THEN NOW()
-                              ELSE COALESCE(orders_current.status_since, EXCLUDED.updated_ts)
+                              WHEN orders_current.status <> EXCLUDED.status
+                                THEN COALESCE(EXCLUDED.status_since, NOW())
+                              ELSE COALESCE(orders_current.status_since, EXCLUDED.status_since, NOW())
                             END,
                             status     = EXCLUDED.status
                         """,
@@ -469,7 +476,7 @@ def _run_sync() -> dict:
                     )
                     if event_rows:
                         cur.executemany(
-                            "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
+                            "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, %s)",
                             event_rows,
                         )
                         b_events += len(event_rows)
@@ -934,10 +941,9 @@ def top_products(days: int = 30, limit: int = 10):
       SUM(oi.quantity)::int            AS units,
       COUNT(DISTINCT oi.order_id)::int AS orders
     FROM order_items oi
-    JOIN orders_meta    om ON om.order_id = oi.order_id
+    JOIN orders_meta om ON om.order_id = oi.order_id
     JOIN orders_current oc ON oc.order_id = oi.order_id
     WHERE COALESCE(om.date_confirmed, om.date_add, NOW()) >= %s
-      AND oc.status <> ALL(%s)
       AND oc.status <> ALL(%s)
     GROUP BY 1, 2
     ORDER BY units DESC
@@ -946,7 +952,7 @@ def top_products(days: int = 30, limit: int = 10):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (since, STATUS_MAP["CERRADOS"], EXCLUDED_STATUSES or ["__never__"], limit))
+            cur.execute(q, (since, EXCLUDED_STATUSES or ["__never__"], limit))
             rows = cur.fetchall()
 
     return [{"sku": r[0], "name": r[1], "units": r[2], "orders": r[3]} for r in rows]
