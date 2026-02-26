@@ -47,7 +47,8 @@ STATUS_MAP: dict[str, list[str]] = json.loads(
             {
                 "NUEVOS": ["Nuevos pedidos"],
                 "RECEPCION": ["Agendados", "A distribuir", "error de etiqueta"],
-                "PREPARACION": ["Turbo", "Flex", "Colecta", "ME1", "Recolectando"],
+                "PREPARACION": ["Turbo", "Flex", "Colecta", "Recolectando"],
+                "EXCLUIDOS": ["ME1"],
                 "EMBALADO": [
                     "Puesto 1",
                     "Puesto 2",
@@ -72,6 +73,9 @@ PACKER_STATUSES: list[str] = [s for s in STATUS_MAP["EMBALADO"] if s.startswith(
 
 # Buckets considerados "activos" (pedidos en vuelo)
 ACTIVE_BUCKETS = ["NUEVOS", "RECEPCION", "PREPARACION", "EMBALADO", "DESPACHO"]
+
+# Estados completamente excluidos de KPIs, tops y embaladores
+EXCLUDED_STATUSES: list[str] = STATUS_MAP.get("EXCLUIDOS", [])
 
 
 # ===============================
@@ -424,6 +428,8 @@ def _run_sync() -> dict:
           SELECT DISTINCT ON (order_id)
             order_id, status, event_ts
           FROM order_events
+          -- Excluir estados ignorados antes de calcular cualquier métrica
+          WHERE status <> ALL(%(excluidos)s)
           ORDER BY order_id, event_ts::timestamptz DESC
         ),
         bucketed AS (
@@ -448,13 +454,13 @@ def _run_sync() -> dict:
            WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
           (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
           (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-          -- FIX: COUNT DISTINCT para no inflar si un pedido tiene varios eventos hoy
           (SELECT COUNT(DISTINCT order_id) FROM order_events
            WHERE status = ANY(%(env)s)
-             AND event_ts::timestamptz >= %(today_start)s)                              AS despachados_hoy,
+             AND status <> ALL(%(excluidos)s)
+             AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
           (SELECT COUNT(*) FROM bucketed
            WHERE bucket = ANY(%(active_buckets)s)
-             AND event_ts::timestamptz < %(late_cutoff)s)                               AS atrasados_24h,
+             AND event_ts::timestamptz < %(late_cutoff)s)                  AS atrasados_24h,
           (SELECT COALESCE(
              AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
            ) FROM bucketed
@@ -470,6 +476,7 @@ def _run_sync() -> dict:
             "env":            STATUS_MAP["ENVIADO"],
             "ent":            STATUS_MAP["ENTREGADO"],
             "cerr":           STATUS_MAP["CERRADOS"],
+            "excluidos":      EXCLUDED_STATUSES or ["__never__"],  # evitar array vacío en ANY()
             "active_buckets": ACTIVE_BUCKETS,
             "late_cutoff":    late_cutoff,
             "today_start":    today_start,
@@ -570,6 +577,7 @@ def top_products(days: int = 30, limit: int = 10):
     JOIN orders_current oc ON oc.order_id = oi.order_id
     WHERE COALESCE(om.date_confirmed, om.date_add, NOW()) >= %s
       AND oc.status <> ALL(%s)
+      AND oc.status <> ALL(%s)
     GROUP BY 1, 2
     ORDER BY units DESC
     LIMIT %s;
@@ -577,7 +585,7 @@ def top_products(days: int = 30, limit: int = 10):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (since, STATUS_MAP["CERRADOS"], limit))
+            cur.execute(q, (since, STATUS_MAP["CERRADOS"], EXCLUDED_STATUSES or ["__never__"], limit))
             rows = cur.fetchall()
 
     return [{"sku": r[0], "name": r[1], "units": r[2], "orders": r[3]} for r in rows]
@@ -596,6 +604,7 @@ def top_packers(days: int = 1, limit: int = 6):
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
+      AND status <> ALL(%s)
       AND event_ts::timestamptz >= %s
     GROUP BY status
     ORDER BY orders_packed DESC
@@ -604,7 +613,7 @@ def top_packers(days: int = 1, limit: int = 6):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (PACKER_STATUSES, since, limit))
+            cur.execute(q, (PACKER_STATUSES, EXCLUDED_STATUSES or ["__never__"], since, limit))
             rows = cur.fetchall()
 
     return [{"packer": r[0], "orders_packed": r[1]} for r in rows]
@@ -620,10 +629,11 @@ def packers_hourly(hours: int = 24):
     q = """
     SELECT
       date_trunc('hour', event_ts::timestamptz) AS hour,
-      status                       AS packer,
+      status                        AS packer,
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
+      AND status <> ALL(%s)
       AND event_ts::timestamptz >= %s
     GROUP BY 1, 2
     ORDER BY 1 ASC, 2 ASC;
@@ -631,7 +641,7 @@ def packers_hourly(hours: int = 24):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (PACKER_STATUSES, since))
+            cur.execute(q, (PACKER_STATUSES, EXCLUDED_STATUSES or ["__never__"], since))
             rows = cur.fetchall()
 
     return [{"hour": r[0].isoformat(), "packer": r[1], "orders_packed": r[2]} for r in rows]
