@@ -268,6 +268,21 @@ def _ensure_schema() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id   ON order_items(order_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_sku        ON order_items(sku);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_ts        ON orders_kpi_snapshot(snapshot_ts);")
+            # Migrar: agregar status_since a orders_current si no existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'orders_current' AND column_name = 'status_since'
+                  ) THEN
+                    ALTER TABLE orders_current ADD COLUMN status_since TIMESTAMPTZ;
+                    UPDATE orders_current SET status_since = updated_ts WHERE status_since IS NULL;
+                  END IF;
+                END $$;
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_current_status_since ON orders_current(status_since);")
+
 
 
 app = FastAPI(lifespan=lifespan)
@@ -440,11 +455,15 @@ def _run_sync() -> dict:
                     )
                     cur.executemany(
                         """
-                        INSERT INTO orders_current(order_id, status, updated_ts)
-                        VALUES (%s, %s, NOW())
+                        INSERT INTO orders_current(order_id, status, updated_ts, status_since)
+                        VALUES (%s, %s, NOW(), NOW())
                         ON CONFLICT(order_id) DO UPDATE
-                        SET status     = EXCLUDED.status,
-                            updated_ts = EXCLUDED.updated_ts
+                        SET updated_ts   = EXCLUDED.updated_ts,
+                            status_since = CASE
+                              WHEN orders_current.status <> EXCLUDED.status THEN NOW()
+                              ELSE COALESCE(orders_current.status_since, EXCLUDED.updated_ts)
+                            END,
+                            status     = EXCLUDED.status
                         """,
                         current_rows,
                     )
@@ -1000,7 +1019,7 @@ def pending_orders(limit: int = 200):
         oc.order_id,
         oc.status,
         oc.updated_ts,
-        EXTRACT(EPOCH FROM (NOW() - oc.updated_ts)) / 60.0 AS mins_in_status,
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(oc.status_since, oc.updated_ts))) / 60.0 AS mins_in_status,
         COALESCE(
             json_agg(
                 json_build_object(
