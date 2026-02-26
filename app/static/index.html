@@ -657,7 +657,7 @@
     </div>
 
 
-    <div class="grid-bottom" style="grid-template-columns: 1fr 1fr 1fr;">
+    <div class="grid-bottom">
       <div class="card">
         <div class="card-title">
           <div>Top 10 artículos vendidos <span>(últimos 7 días)</span></div>
@@ -672,14 +672,6 @@
           <span class="muted" id="topPackersMeta">—</span>
         </div>
         <div id="topPackersWrap"><div class="empty">Cargando…</div></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">
-          <div>Top buscadores <span>(hoy)</span></div>
-          <span class="muted" id="topPickersMeta">—</span>
-        </div>
-        <div id="topPickersWrap"><div class="empty">Cargando…</div></div>
       </div>
     </div>
 
@@ -1055,14 +1047,6 @@
         $("topPackersWrap").innerHTML = `<div class="empty">Error cargando top embaladores.</div>`;
       }
 
-      try {
-        const pi = await fetchJson("/api/top-pickers?days=1&limit=10");
-        $("topPickersWrap").innerHTML = renderTopPickers(pi);
-        $("topPickersMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", { hour12: false });
-      } catch (e) {
-        console.error("top-pickers error", e);
-        $("topPickersWrap").innerHTML = `<div class="empty">Error cargando top buscadores.</div>`;
-      }
     }
 
 
