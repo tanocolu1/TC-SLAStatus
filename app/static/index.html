@@ -1174,11 +1174,13 @@
         markStale(false);
         applyMetrics(m);
 
-        // Reajustar intervalo si el servidor lo cambió
-        const serverInterval = (m.refresh_seconds ?? 10) * 1000;
-        if (serverInterval !== kpiIntervalMs) {
-          startKpiLoop(serverInterval);
-          return; // el nuevo loop arrancará con el intervalo correcto
+        // Reajustar intervalo si el servidor lo cambió (ignorar en modo TV)
+        if (!IS_TV) {
+          const serverInterval = (m.refresh_seconds ?? 10) * 1000;
+          if (serverInterval !== kpiIntervalMs) {
+            startKpiLoop(serverInterval);
+            return;
+          }
         }
       } catch (e) {
         console.error("metrics error", e);
