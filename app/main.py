@@ -1,5 +1,4 @@
 import asyncio
-import asyncio
 import logging
 import os
 import json
@@ -204,6 +203,22 @@ def _ensure_schema() -> None:
             """)
             # Índices
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_order_id ON order_events(order_id);")
+            # Migrar event_ts de TEXT a TIMESTAMPTZ si la columna todavía es TEXT
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'order_events'
+                      AND column_name = 'event_ts'
+                      AND data_type = 'text'
+                  ) THEN
+                    ALTER TABLE order_events
+                      ALTER COLUMN event_ts TYPE TIMESTAMPTZ
+                      USING event_ts::timestamptz;
+                  END IF;
+                END $$;
+            """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_event_ts  ON order_events(event_ts);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_status    ON order_events(status);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_meta_date_conf  ON orders_meta(date_confirmed);")
@@ -405,12 +420,12 @@ def _run_sync() -> dict:
           SELECT DISTINCT ON (order_id)
             order_id, status, event_ts
           FROM order_events
-          ORDER BY order_id, event_ts DESC
+          ORDER BY order_id, event_ts::timestamptz DESC
         ),
         bucketed AS (
           SELECT
             order_id,
-            event_ts,
+            event_ts::timestamptz AS event_ts,
             CASE
               WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
               WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
@@ -432,12 +447,12 @@ def _run_sync() -> dict:
           -- FIX: COUNT DISTINCT para no inflar si un pedido tiene varios eventos hoy
           (SELECT COUNT(DISTINCT order_id) FROM order_events
            WHERE status = ANY(%(env)s)
-             AND event_ts >= %(today_start)s)                              AS despachados_hoy,
+             AND event_ts::timestamptz >= %(today_start)s)                              AS despachados_hoy,
           (SELECT COUNT(*) FROM bucketed
            WHERE bucket = ANY(%(active_buckets)s)
-             AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
+             AND event_ts::timestamptz < %(late_cutoff)s)                               AS atrasados_24h,
           (SELECT COALESCE(
-             AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
+             AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
            ) FROM bucketed
            WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
         """
@@ -577,7 +592,7 @@ def top_packers(days: int = 1, limit: int = 6):
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
-      AND event_ts >= %s
+      AND event_ts::timestamptz >= %s
     GROUP BY status
     ORDER BY orders_packed DESC
     LIMIT %s;
@@ -600,12 +615,12 @@ def packers_hourly(hours: int = 24):
 
     q = """
     SELECT
-      date_trunc('hour', event_ts) AS hour,
+      date_trunc('hour', event_ts::timestamptz) AS hour,
       status                       AS packer,
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
-      AND event_ts >= %s
+      AND event_ts::timestamptz >= %s
     GROUP BY 1, 2
     ORDER BY 1 ASC, 2 ASC;
     """
