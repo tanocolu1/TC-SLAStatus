@@ -554,6 +554,60 @@ def sync(request: Request):
 
 
 # ===============================
+# DIAGNÓSTICO (temporal)
+# ===============================
+@app.get("/api/debug")
+def debug():
+    now = datetime.now(timezone.utc)
+    result = {"server_now_utc": now.isoformat()}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Últimos 3 snapshots
+            cur.execute("""
+                SELECT snapshot_ts, en_preparacion, embalados, en_despacho, despachados_hoy
+                FROM orders_kpi_snapshot
+                ORDER BY snapshot_ts DESC
+                LIMIT 3
+            """)
+            result["snapshots"] = [
+                {"snapshot_ts": r[0].isoformat(), "en_prep": r[1], "embalados": r[2],
+                 "en_despacho": r[3], "despachados_hoy": r[4]}
+                for r in cur.fetchall()
+            ]
+
+            # Conteo de pedidos por estado
+            cur.execute("""
+                SELECT status, COUNT(*) AS n
+                FROM orders_current
+                GROUP BY status
+                ORDER BY n DESC
+                LIMIT 20
+            """)
+            result["orders_by_status"] = [
+                {"status": r[0], "count": r[1]} for r in cur.fetchall()
+            ]
+
+            # Total de eventos
+            cur.execute("SELECT COUNT(*) FROM order_events")
+            result["total_events"] = cur.fetchone()[0]
+
+            # Evento más reciente
+            cur.execute("""
+                SELECT order_id, status, event_ts::timestamptz
+                FROM order_events
+                ORDER BY event_ts DESC
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            result["last_event"] = {
+                "order_id": row[0], "status": row[1], "event_ts": row[2].isoformat()
+            } if row else None
+
+    return JSONResponse(result)
+
+
+# ===============================
 # METRICS
 # ===============================
 @app.get("/api/metrics")
