@@ -489,10 +489,10 @@ def _run_sync() -> dict:
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(*) FROM orders_current
+      (SELECT COUNT(DISTINCT order_id) FROM order_events
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
-         AND updated_ts::timestamptz >= %(today_start)s)               AS despachados_hoy,
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
@@ -559,6 +559,36 @@ def sync(request: Request):
 # ===============================
 # DIAGNÓSTICO (temporal)
 # ===============================
+@app.post("/api/debug/backfill-enviados")
+def backfill_enviados():
+    """Inserta eventos de hoy para pedidos en Enviado que no tienen evento de hoy."""
+    from datetime import datetime
+    now_local   = datetime.now(LOCAL_TZ)
+    today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Pedidos actualmente en Enviado sin evento de hoy
+            cur.execute("""
+                INSERT INTO order_events(order_id, status, event_ts)
+                SELECT oc.order_id, oc.status, NOW()
+                FROM orders_current oc
+                WHERE oc.status = ANY(%s)
+                  AND oc.status <> ALL(%s)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM order_events oe
+                    WHERE oe.order_id = oc.order_id
+                      AND oe.status = oc.status
+                      AND oe.event_ts::timestamptz >= %s
+                  )
+                RETURNING order_id
+            """, (STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], today_start))
+            inserted = cur.rowcount
+        conn.commit()
+
+    return JSONResponse({"inserted": inserted})
+
+
 @app.post("/api/debug/limpiar-enviados")
 def limpiar_enviados_iniciales():
     """Borra eventos 'Enviado' del sync inicial (antes de las 08:00 ARG de hoy)."""
@@ -729,10 +759,10 @@ def cleanup_snapshots():
        WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
       (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
-      (SELECT COUNT(*) FROM orders_current
+      (SELECT COUNT(DISTINCT order_id) FROM order_events
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
-         AND updated_ts::timestamptz >= %(today_start)s)               AS despachados_hoy,
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
          AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
