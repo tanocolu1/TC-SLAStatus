@@ -1,15 +1,20 @@
+import logging
 import os
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import psycopg
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI()
+logger = logging.getLogger("uvicorn.error")
 
 # ===============================
 # ENV
@@ -21,11 +26,13 @@ BL_API_URL = os.environ.get("BL_API_URL", "https://api.baselinker.com/connector.
 BL_TOKEN = os.environ.get("BL_TOKEN", "")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "")
 
-# Sync config
-SYNC_WINDOW_DAYS = int(os.environ.get("SYNC_WINDOW_DAYS", "30"))      # "30 días reales"
-MAX_SYNC_LOOPS = int(os.environ.get("MAX_SYNC_LOOPS", "120"))         # corte seguridad (batches de 100)
+SYNC_WINDOW_DAYS = int(os.environ.get("SYNC_WINDOW_DAYS", "30"))
+MAX_SYNC_LOOPS = int(os.environ.get("MAX_SYNC_LOOPS", "120"))
 
-STATUS_MAP = json.loads(
+if not SYNC_SECRET:
+    logger.warning("SYNC_SECRET no está configurado — el endpoint /sync es público.")
+
+STATUS_MAP: dict[str, list[str]] = json.loads(
     os.environ.get(
         "STATUS_MAP_JSON",
         json.dumps(
@@ -43,7 +50,8 @@ STATUS_MAP = json.loads(
                     "Embalado",
                 ],
                 "DESPACHO": ["Mercado Envíos", "Logística propia", "Blitzz", "Zeta", "Eliazar", "Federico"],
-                "ENVIADO": ["Enviado", "Enviado"],
+                # FIX: eliminado duplicado "Enviado" que aparecía dos veces en la lista original
+                "ENVIADO": ["Enviado"],
                 "ENTREGADO": ["Entregado"],
                 "CERRADOS": ["Cancelado", "Full", "Pedidos antiguos"],
             }
@@ -51,27 +59,134 @@ STATUS_MAP = json.loads(
     )
 )
 
-PACKER_STATUSES = ["Puesto 1", "Puesto 2", "Puesto 3", "Puesto 4", "Puesto 5", "Puesto 6"]
+# FIX: derivado de STATUS_MAP para no desincronizarse si se agrega un puesto nuevo
+PACKER_STATUSES: list[str] = [s for s in STATUS_MAP["EMBALADO"] if s.startswith("Puesto")]
+
+# Buckets considerados "activos" (pedidos en vuelo)
+ACTIVE_BUCKETS = ["NUEVOS", "RECEPCION", "PREPARACION", "EMBALADO", "DESPACHO"]
+
+
+# ===============================
+# HTTP SESSION con retry automático
+# ===============================
+def _make_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,           # 1 s, 2 s, 4 s
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+_http = _make_session()
 
 
 # ===============================
 # DB
 # ===============================
-def get_conn():
+def get_conn() -> psycopg.Connection:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL no configurado")
-    # evita cuelgues largos -> 502
     return psycopg.connect(DATABASE_URL, connect_timeout=5)
+
+
+# ===============================
+# HTML estático cacheado en memoria
+# ===============================
+@lru_cache(maxsize=1)
+def _load_index_html() -> str:
+    with open("app/static/index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+
+# ===============================
+# STARTUP via lifespan (on_event está deprecado en FastAPI moderno)
+# ===============================
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        _ensure_schema()
+    except Exception as exc:
+        logger.error("Error al inicializar el schema: %s", exc)
+        raise
+    yield
+
+
+def _ensure_schema() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # FIX: order_events se define acá. En la versión anterior solo se creaban
+            # índices sobre ella sin haber creado la tabla, lo que reventaba el startup.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_events (
+                  id       BIGSERIAL PRIMARY KEY,
+                  order_id TEXT NOT NULL,
+                  status   TEXT NOT NULL,
+                  event_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_current (
+                  order_id   TEXT PRIMARY KEY,
+                  status     TEXT NOT NULL,
+                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_meta (
+                  order_id       TEXT PRIMARY KEY,
+                  date_confirmed TIMESTAMPTZ NULL,
+                  date_add       TIMESTAMPTZ NULL,
+                  updated_ts     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS order_items (
+                  order_product_id BIGINT PRIMARY KEY,
+                  order_id         TEXT NOT NULL,
+                  sku              TEXT NULL,
+                  name             TEXT NULL,
+                  quantity         INT NOT NULL DEFAULT 0,
+                  price_brutto     DOUBLE PRECISION NULL,
+                  updated_ts       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders_kpi_snapshot (
+                  id              BIGSERIAL PRIMARY KEY,
+                  snapshot_ts     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  en_preparacion  INT NOT NULL,
+                  embalados       INT NOT NULL,
+                  en_despacho     INT NOT NULL,
+                  despachados_hoy INT NOT NULL,
+                  atrasados_24h   INT NOT NULL,
+                  avg_age_min     DOUBLE PRECISION NOT NULL
+                );
+            """)
+            # Índices
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_order_id ON order_events(order_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_event_ts  ON order_events(event_ts);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_status    ON order_events(status);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_meta_date_conf  ON orders_meta(date_confirmed);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id   ON order_items(order_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_sku        ON order_items(sku);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_ts        ON orders_kpi_snapshot(snapshot_ts);")
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # ===============================
 # BASE API
 # ===============================
-def bl_call(method: str, params: dict):
+def bl_call(method: str, params: dict) -> dict:
     if not BL_TOKEN:
         raise RuntimeError("BL_TOKEN no configurado")
-
-    r = requests.post(
+    r = _http.post(
         BL_API_URL,
         headers={"X-BLToken": BL_TOKEN},
         data={"method": method, "parameters": json.dumps(params)},
@@ -85,293 +200,262 @@ def bl_call(method: str, params: dict):
 
 
 # ===============================
-# STARTUP: only ensure tables (NO indexes)
-# ===============================
-@app.on_event("startup")
-def ensure_schema():
-    # Importante: nada pesado en startup
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS orders_current (
-                  order_id TEXT PRIMARY KEY,
-                  status TEXT NOT NULL,
-                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS orders_meta (
-                  order_id TEXT PRIMARY KEY,
-                  date_confirmed TIMESTAMPTZ NULL,
-                  date_add TIMESTAMPTZ NULL,
-                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS order_items (
-                  order_product_id BIGINT PRIMARY KEY,
-                  order_id TEXT NOT NULL,
-                  sku TEXT NULL,
-                  name TEXT NULL,
-                  quantity INT NOT NULL DEFAULT 0,
-                  price_brutto DOUBLE PRECISION NULL,
-                  updated_ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS orders_kpi_snapshot (
-                  id BIGSERIAL PRIMARY KEY,
-                  snapshot_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  en_preparacion INT NOT NULL,
-                  embalados INT NOT NULL,
-                  en_despacho INT NOT NULL,
-                  despachados_hoy INT NOT NULL,
-                  atrasados_24h INT NOT NULL,
-                  avg_age_min DOUBLE PRECISION NOT NULL
-                );
-            """)
-
-
-# ===============================
 # SYNC (paginado 100/batch) + SNAPSHOT
 # ===============================
 @app.post("/sync")
 def sync(request: Request):
     if SYNC_SECRET:
-        incoming = request.headers.get("X-Sync-Secret")
-        if incoming != SYNC_SECRET:
+        if request.headers.get("X-Sync-Secret") != SYNC_SECRET:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # status_id -> name
+    # 1) status_id -> name
     status_list = bl_call("getOrderStatusList", {}).get("statuses", [])
-    status_map = {}
+    id_to_name: dict[int, str] = {}
     for s in status_list:
         try:
-            sid = int(s.get("id"))
-            status_map[sid] = s.get("name", str(sid))
+            id_to_name[int(s["id"])] = s.get("name", str(s["id"]))
         except Exception:
             continue
 
-    # ventana 30 días (configurable)
-    from_ts = int(time.time()) - (SYNC_WINDOW_DAYS * 24 * 60 * 60)
-
-    all_orders = []
+    # 2) Paginación temporal
+    from_ts = int(time.time()) - (SYNC_WINDOW_DAYS * 24 * 3600)
+    all_orders: list[dict] = []
     loops = 0
 
-    while True:
+    while loops < MAX_SYNC_LOOPS:
         loops += 1
         data = bl_call(
             "getOrders",
             {"date_confirmed_from": from_ts, "get_unconfirmed_orders": True},
         )
-        orders = data.get("orders", [])
-        if not orders:
+        batch = data.get("orders", [])
+        if not batch:
             break
 
-        all_orders.extend(orders)
+        all_orders.extend(batch)
 
-        # avanzar cursor temporal usando el máximo date_confirmed/date_add del batch
+        if len(batch) < 100:
+            break   # última página
+
+        # avanzar cursor al máximo timestamp del batch
         max_ts = from_ts
-        for o in orders:
-            dc = o.get("date_confirmed") or 0
-            da = o.get("date_add") or 0
-            try:
-                max_ts = max(max_ts, int(dc), int(da))
-            except Exception:
-                pass
+        for o in batch:
+            for field in ("date_confirmed", "date_add"):
+                try:
+                    max_ts = max(max_ts, int(o.get(field) or 0))
+                except Exception:
+                    pass
 
-        # si vinieron menos de 100, probablemente no hay más
-        if len(orders) < 100:
-            break
-
-        # si no avanza, cortamos para no loop infinito
         if max_ts <= from_ts:
-            break
+            break   # no avanzó → cortar para no loop infinito
 
         from_ts = max_ts + 1
 
-        if loops >= MAX_SYNC_LOOPS:
-            break
-
+    # 3) Persistencia: commit por pedido, rollback individual ante errores
     changed = 0
     events_inserted = 0
+    errors = 0
 
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            for o in all_orders:
-                order_id = str(o.get("order_id") or o.get("id") or "")
-                if not order_id:
-                    continue
+        for o in all_orders:
+            order_id = str(o.get("order_id") or o.get("id") or "")
+            if not order_id:
+                continue
 
-                # status
-                raw_status_id = o.get("order_status_id")
-                status_name = None
-                if raw_status_id is not None:
+            try:
+                # --- status ---
+                raw_sid = o.get("order_status_id")
+                status_name: str | None = None
+                if raw_sid is not None:
                     try:
-                        status_name = status_map.get(int(raw_status_id), str(raw_status_id))
+                        status_name = id_to_name.get(int(raw_sid), str(raw_sid))
                     except Exception:
-                        status_name = str(raw_status_id)
-
-                status_name = status_name or o.get("order_status_name") or o.get("order_status") or o.get("status")
+                        status_name = str(raw_sid)
+                status_name = (
+                    status_name
+                    or o.get("order_status_name")
+                    or o.get("order_status")
+                    or o.get("status")
+                )
                 if not status_name:
                     continue
 
-                # fechas
+                # --- fechas ---
                 dc = o.get("date_confirmed")
                 da = o.get("date_add")
                 date_confirmed = datetime.fromtimestamp(int(dc), tz=timezone.utc) if dc else None
-                date_add = datetime.fromtimestamp(int(da), tz=timezone.utc) if da else None
+                date_add       = datetime.fromtimestamp(int(da), tz=timezone.utc) if da else None
 
-                # orders_meta
-                cur.execute(
-                    """
-                    INSERT INTO orders_meta(order_id, date_confirmed, date_add, updated_ts)
-                    VALUES (%s, %s, %s, NOW())
-                    ON CONFLICT(order_id) DO UPDATE
-                    SET date_confirmed=EXCLUDED.date_confirmed,
-                        date_add=EXCLUDED.date_add,
-                        updated_ts=EXCLUDED.updated_ts
-                    """,
-                    (order_id, date_confirmed, date_add),
-                )
-
-                # dedupe status por pedido
-                cur.execute("SELECT status FROM orders_current WHERE order_id=%s", (order_id,))
-                prev = cur.fetchone()
-                prev_status = prev[0] if prev else None
-
-                cur.execute(
-                    """
-                    INSERT INTO orders_current(order_id, status, updated_ts)
-                    VALUES (%s, %s, NOW())
-                    ON CONFLICT(order_id) DO UPDATE
-                    SET status=EXCLUDED.status, updated_ts=EXCLUDED.updated_ts
-                    """,
-                    (order_id, status_name),
-                )
-
-                if prev_status != status_name:
-                    changed += 1
+                with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
-                        (order_id, status_name),
+                        """
+                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, updated_ts)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT(order_id) DO UPDATE
+                        SET date_confirmed = EXCLUDED.date_confirmed,
+                            date_add       = EXCLUDED.date_add,
+                            updated_ts     = EXCLUDED.updated_ts
+                        """,
+                        (order_id, date_confirmed, date_add),
                     )
-                    events_inserted += 1
 
-                # items
-                for p in (o.get("products") or []):
-                    opid = p.get("order_product_id")
-                    if opid is None:
-                        continue
-                    try:
-                        opid_int = int(opid)
-                    except Exception:
-                        continue
-
-                    sku = p.get("sku") or ""
-                    name = p.get("name") or ""
-                    qty = int(p.get("quantity") or 0)
-                    price = float(p.get("price_brutto") or 0.0)
+                    cur.execute("SELECT status FROM orders_current WHERE order_id = %s", (order_id,))
+                    prev = cur.fetchone()
+                    prev_status = prev[0] if prev else None
 
                     cur.execute(
                         """
-                        INSERT INTO order_items(order_product_id, order_id, sku, name, quantity, price_brutto, updated_ts)
-                        VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT(order_product_id) DO UPDATE
-                        SET order_id=EXCLUDED.order_id,
-                            sku=EXCLUDED.sku,
-                            name=EXCLUDED.name,
-                            quantity=EXCLUDED.quantity,
-                            price_brutto=EXCLUDED.price_brutto,
-                            updated_ts=EXCLUDED.updated_ts
+                        INSERT INTO orders_current(order_id, status, updated_ts)
+                        VALUES (%s, %s, NOW())
+                        ON CONFLICT(order_id) DO UPDATE
+                        SET status     = EXCLUDED.status,
+                            updated_ts = EXCLUDED.updated_ts
                         """,
-                        (opid_int, order_id, sku, name, qty, price),
+                        (order_id, status_name),
                     )
 
-            # snapshot KPI
-            now = datetime.now(timezone.utc)
-            today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-            late_cutoff = now - timedelta(hours=24)
+                    if prev_status != status_name:
+                        changed += 1
+                        cur.execute(
+                            "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
+                            (order_id, status_name),
+                        )
+                        events_inserted += 1
 
-            q = """
-            WITH latest AS (
-              SELECT DISTINCT ON (order_id)
-                order_id, status, event_ts
-              FROM order_events
-              ORDER BY order_id, event_ts DESC
-            ),
-            current AS (
-              SELECT
-                order_id,
-                status,
-                event_ts,
-                CASE
-                  WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
-                  WHEN status = ANY(%(recep)s) THEN 'RECEPCION'
-                  WHEN status = ANY(%(prep)s) THEN 'PREPARACION'
-                  WHEN status = ANY(%(pack)s) THEN 'EMBALADO'
-                  WHEN status = ANY(%(desp)s) THEN 'DESPACHO'
-                  WHEN status = ANY(%(env)s) THEN 'ENVIADO'
-                  WHEN status = ANY(%(ent)s) THEN 'ENTREGADO'
-                  WHEN status = ANY(%(cerr)s) THEN 'CERRADOS'
-                  ELSE 'OTROS'
-                END AS bucket
-              FROM latest
-            )
-            SELECT
-              (SELECT COUNT(*) FROM current WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION')) AS en_preparacion,
-              (SELECT COUNT(*) FROM current WHERE bucket='EMBALADO') AS embalados,
-              (SELECT COUNT(*) FROM current WHERE bucket='DESPACHO') AS en_despacho,
-              (SELECT COUNT(*) FROM order_events WHERE status = ANY(%(env)s) AND event_ts::timestamptz >= %(today_start)s) AS despachados_hoy,
-              (SELECT COUNT(*) FROM current
-                WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
-                  AND event_ts::timestamptz < %(late_cutoff)s
-              ) AS atrasados_24h,
-              (SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)))/60.0, 0)
-                FROM current
-                WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
-              ) AS avg_age_min
-            ;
-            """
+                    # --- items ---
+                    for p in (o.get("products") or []):
+                        opid = p.get("order_product_id")
+                        if opid is None:
+                            continue
+                        try:
+                            opid_int = int(opid)
+                        except Exception:
+                            continue
 
-            params = {
-                "nuevos": STATUS_MAP["NUEVOS"],
-                "recep": STATUS_MAP["RECEPCION"],
-                "prep": STATUS_MAP["PREPARACION"],
-                "pack": STATUS_MAP["EMBALADO"],
-                "desp": STATUS_MAP["DESPACHO"],
-                "env": STATUS_MAP["ENVIADO"],
-                "ent": STATUS_MAP["ENTREGADO"],
-                "cerr": STATUS_MAP["CERRADOS"],
-                "late_cutoff": late_cutoff,
-                "today_start": today_start,
-            }
+                        cur.execute(
+                            """
+                            INSERT INTO order_items(
+                              order_product_id, order_id, sku, name,
+                              quantity, price_brutto, updated_ts
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                            ON CONFLICT(order_product_id) DO UPDATE
+                            SET order_id     = EXCLUDED.order_id,
+                                sku          = EXCLUDED.sku,
+                                name         = EXCLUDED.name,
+                                quantity     = EXCLUDED.quantity,
+                                price_brutto = EXCLUDED.price_brutto,
+                                updated_ts   = EXCLUDED.updated_ts
+                            """,
+                            (
+                                opid_int,
+                                order_id,
+                                p.get("sku") or "",
+                                p.get("name") or "",
+                                int(p.get("quantity") or 0),
+                                float(p.get("price_brutto") or 0.0),
+                            ),
+                        )
 
-            cur.execute(q, params)
-            kpi = cur.fetchone()
+                conn.commit()
 
-            cur.execute(
-                """
-                INSERT INTO orders_kpi_snapshot(
-                  en_preparacion, embalados, en_despacho, despachados_hoy, atrasados_24h, avg_age_min
+            except Exception as exc:
+                logger.error("Error procesando order_id=%s: %s", order_id, exc)
+                conn.rollback()
+                errors += 1
+
+        # 4) Snapshot KPI — fuera del loop de pedidos
+        now         = datetime.now(timezone.utc)
+        today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        late_cutoff = now - timedelta(hours=24)
+
+        kpi_sql = """
+        WITH latest AS (
+          SELECT DISTINCT ON (order_id)
+            order_id, status, event_ts
+          FROM order_events
+          ORDER BY order_id, event_ts DESC
+        ),
+        bucketed AS (
+          SELECT
+            order_id,
+            event_ts,
+            CASE
+              WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
+              WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
+              WHEN status = ANY(%(prep)s)   THEN 'PREPARACION'
+              WHEN status = ANY(%(pack)s)   THEN 'EMBALADO'
+              WHEN status = ANY(%(desp)s)   THEN 'DESPACHO'
+              WHEN status = ANY(%(env)s)    THEN 'ENVIADO'
+              WHEN status = ANY(%(ent)s)    THEN 'ENTREGADO'
+              WHEN status = ANY(%(cerr)s)   THEN 'CERRADOS'
+              ELSE 'OTROS'
+            END AS bucket
+          FROM latest
+        )
+        SELECT
+          (SELECT COUNT(*) FROM bucketed
+           WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
+          (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
+          (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
+          -- FIX: COUNT DISTINCT para no inflar si un pedido tiene varios eventos hoy
+          (SELECT COUNT(DISTINCT order_id) FROM order_events
+           WHERE status = ANY(%(env)s)
+             AND event_ts >= %(today_start)s)                              AS despachados_hoy,
+          (SELECT COUNT(*) FROM bucketed
+           WHERE bucket = ANY(%(active_buckets)s)
+             AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
+          (SELECT COALESCE(
+             AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
+           ) FROM bucketed
+           WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
+        """
+
+        kpi_params = {
+            "nuevos":         STATUS_MAP["NUEVOS"],
+            "recep":          STATUS_MAP["RECEPCION"],
+            "prep":           STATUS_MAP["PREPARACION"],
+            "pack":           STATUS_MAP["EMBALADO"],
+            "desp":           STATUS_MAP["DESPACHO"],
+            "env":            STATUS_MAP["ENVIADO"],
+            "ent":            STATUS_MAP["ENTREGADO"],
+            "cerr":           STATUS_MAP["CERRADOS"],
+            "active_buckets": ACTIVE_BUCKETS,
+            "late_cutoff":    late_cutoff,
+            "today_start":    today_start,
+        }
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(kpi_sql, kpi_params)
+                kpi = cur.fetchone()
+                cur.execute(
+                    """
+                    INSERT INTO orders_kpi_snapshot(
+                      en_preparacion, embalados, en_despacho,
+                      despachados_hoy, atrasados_24h, avg_age_min
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    kpi,
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                kpi,
-            )
+            conn.commit()
+        except Exception as exc:
+            logger.error("Error guardando snapshot KPI: %s", exc)
+            conn.rollback()
 
     return {
-        "ok": True,
+        "ok":              True,
         "orders_received": len(all_orders),
-        "changed": changed,
+        "changed":         changed,
         "events_inserted": events_inserted,
-        "window_days": SYNC_WINDOW_DAYS,
-        "loops": loops,
+        "errors":          errors,
+        "window_days":     SYNC_WINDOW_DAYS,
+        "loops":           loops,
     }
 
 
 # ===============================
-# METRICS (snapshot)
+# METRICS
 # ===============================
 @app.get("/api/metrics")
 def metrics():
@@ -379,14 +463,8 @@ def metrics():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT
-                  en_preparacion,
-                  embalados,
-                  en_despacho,
-                  despachados_hoy,
-                  atrasados_24h,
-                  avg_age_min,
-                  snapshot_ts
+                SELECT en_preparacion, embalados, en_despacho,
+                       despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts
                 FROM orders_kpi_snapshot
                 ORDER BY snapshot_ts DESC
                 LIMIT 1
@@ -394,69 +472,60 @@ def metrics():
             )
             row = cur.fetchone()
 
+    now = datetime.now(timezone.utc)
     if not row:
-        now = datetime.now(timezone.utc)
-        return JSONResponse(
-            {
-                "en_preparacion": 0,
-                "embalados": 0,
-                "en_despacho": 0,
-                "despachados_hoy": 0,
-                "atrasados_24h": 0,
-                "avg_age_min": 0.0,
-                "refresh_seconds": REFRESH_SECONDS,
-                "server_time_utc": now.isoformat(),
-            }
-        )
-
-    return JSONResponse(
-        {
-            "en_preparacion": int(row[0] or 0),
-            "embalados": int(row[1] or 0),
-            "en_despacho": int(row[2] or 0),
-            "despachados_hoy": int(row[3] or 0),
-            "atrasados_24h": int(row[4] or 0),
-            "avg_age_min": float(row[5] or 0.0),
+        return JSONResponse({
+            "en_preparacion": 0, "embalados": 0, "en_despacho": 0,
+            "despachados_hoy": 0, "atrasados_24h": 0, "avg_age_min": 0.0,
             "refresh_seconds": REFRESH_SECONDS,
-            "server_time_utc": row[6].isoformat(),
-        }
-    )
+            "server_time_utc": now.isoformat(),
+        })
+
+    return JSONResponse({
+        "en_preparacion":  int(row[0] or 0),
+        "embalados":       int(row[1] or 0),
+        "en_despacho":     int(row[2] or 0),
+        "despachados_hoy": int(row[3] or 0),
+        "atrasados_24h":   int(row[4] or 0),
+        "avg_age_min":     float(row[5] or 0.0),
+        "refresh_seconds": REFRESH_SECONDS,
+        "server_time_utc": row[6].isoformat(),
+    })
 
 
 # ===============================
-# TOP PRODUCTS (default 30 días)
+# TOP PRODUCTS
 # ===============================
 @app.get("/api/top-products")
 def top_products(days: int = 30, limit: int = 10):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    closed = STATUS_MAP["CERRADOS"]
 
     q = """
     SELECT
-      COALESCE(NULLIF(oi.sku,''), '(sin sku)') AS sku,
-      COALESCE(NULLIF(oi.name,''), '(sin nombre)') AS name,
-      SUM(oi.quantity)::int AS units,
+      COALESCE(NULLIF(oi.sku,  ''), '(sin sku)')    AS sku,
+      COALESCE(NULLIF(oi.name, ''), '(sin nombre)') AS name,
+      SUM(oi.quantity)::int            AS units,
       COUNT(DISTINCT oi.order_id)::int AS orders
     FROM order_items oi
-    JOIN orders_meta om ON om.order_id = oi.order_id
+    JOIN orders_meta    om ON om.order_id = oi.order_id
     JOIN orders_current oc ON oc.order_id = oi.order_id
     WHERE COALESCE(om.date_confirmed, om.date_add, NOW()) >= %s
       AND oc.status <> ALL(%s)
-    GROUP BY 1,2
+    GROUP BY 1, 2
     ORDER BY units DESC
     LIMIT %s;
     """
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (since, closed, limit))
+            cur.execute(q, (since, STATUS_MAP["CERRADOS"], limit))
             rows = cur.fetchall()
 
     return [{"sku": r[0], "name": r[1], "units": r[2], "orders": r[3]} for r in rows]
 
 
 # ===============================
-# TOP PACKERS (ranking)
+# TOP PACKERS
 # ===============================
 @app.get("/api/top-packers")
 def top_packers(days: int = 1, limit: int = 6):
@@ -468,7 +537,7 @@ def top_packers(days: int = 1, limit: int = 6):
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
-      AND event_ts::timestamptz >= %s
+      AND event_ts >= %s
     GROUP BY status
     ORDER BY orders_packed DESC
     LIMIT %s;
@@ -483,7 +552,7 @@ def top_packers(days: int = 1, limit: int = 6):
 
 
 # ===============================
-# PACKERS HOURLY (productividad por hora)
+# PACKERS HOURLY
 # ===============================
 @app.get("/api/packers-hourly")
 def packers_hourly(hours: int = 24):
@@ -491,13 +560,13 @@ def packers_hourly(hours: int = 24):
 
     q = """
     SELECT
-      date_trunc('hour', event_ts)::timestamptz AS hour,
-      status AS packer,
+      date_trunc('hour', event_ts) AS hour,
+      status                       AS packer,
       COUNT(DISTINCT order_id)::int AS orders_packed
     FROM order_events
     WHERE status = ANY(%s)
-      AND event_ts::timestamptz >= %s
-    GROUP BY 1,2
+      AND event_ts >= %s
+    GROUP BY 1, 2
     ORDER BY 1 ASC, 2 ASC;
     """
 
@@ -517,5 +586,4 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    with open("app/static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    return _load_index_html()
