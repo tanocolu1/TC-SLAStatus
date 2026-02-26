@@ -456,15 +456,19 @@
       <div class="card-title">
         <div>Pedidos activos <span id="pendingCount"></span></div>
         <span class="muted" id="pendingMeta">—</span>
-          <div class="pending-filters">
+      </div>
+      <div class="pending-filters">
         <input class="pending-search" id="pendingSearch" type="text" placeholder="Buscar por pedido, producto o SKU…" oninput="filterPending()">
         <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">Todos</button>
         <button class="filter-btn" data-filter="prep" onclick="setFilter('prep',this)">Preparación</button>
         <button class="filter-btn" data-filter="embal" onclick="setFilter('embal',this)">Embalado</button>
         <button class="filter-btn" data-filter="desp" onclick="setFilter('desp',this)">Despacho</button>
-          <div class="pending-table-wrap" id="pendingTableWrap">
+      </div>
+      <div class="pending-table-wrap" id="pendingTableWrap">
         <div class="empty">Cargando…</div>
-      
+      </div>
+    </div>
+
     <div class="grid-bottom">
       <div class="card">
         <div class="card-title">
