@@ -864,3 +864,4 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 @app.get("/", response_class=HTMLResponse)
 def home():
     return _render_index_html()
+railway up
