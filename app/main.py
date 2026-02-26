@@ -137,7 +137,7 @@ def metrics():
 
 @app.post("/sync")
 def sync(request: Request):
-
+    # Seguridad
     if SYNC_SECRET:
         incoming = request.headers.get("X-Sync-Secret")
         if incoming != SYNC_SECRET:
@@ -146,59 +146,78 @@ def sync(request: Request):
     if not BL_TOKEN:
         raise HTTPException(status_code=500, detail="BL_TOKEN not configured")
 
-    payload = {
-        "method": "getOrders",
-        "parameters": json.dumps({
-            "date_confirmed_from": 0,
-            "get_unconfirmed_orders": True
-        })
-    }
-
     headers = {"X-BLToken": BL_TOKEN}
 
-    r = requests.post(BL_API_URL, headers=headers, data=payload, timeout=30)
-    data = r.json()
+    def bl_call(method: str, params: dict):
+        r = requests.post(
+            BL_API_URL,
+            headers=headers,
+            data={"method": method, "parameters": json.dumps(params)},
+            timeout=30,
+        )
+        r.raise_for_status()
+        out = r.json()
+        if out.get("status") != "SUCCESS":
+            raise HTTPException(status_code=500, detail=out)
+        return out
 
-    if data.get("status") != "SUCCESS":
-        raise HTTPException(status_code=500, detail=data)
+    # 1) Descargar lista de estados y armar mapa id->nombre
+    # getOrderStatusList devuelve statuses: [{id, name, ...}] :contentReference[oaicite:1]{index=1}
+    status_list = bl_call("getOrderStatusList", {}).get("statuses", [])
+    status_map = {int(s["id"]): s.get("name", str(s["id"])) for s in status_list if "id" in s}
 
+    # 2) Traer órdenes (por ahora: desde 0; luego optimizamos con watermark)
+    data = bl_call("getOrders", {"date_confirmed_from": 0, "get_unconfirmed_orders": True})  # :contentReference[oaicite:2]{index=2}
     orders = data.get("orders", [])
-    inserted = 0
+
+    changed = 0
+    events_inserted = 0
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             for o in orders:
                 order_id = str(o.get("order_id") or o.get("id") or "")
-                status = (
-                    o.get("order_status")
-                    or o.get("status")
-                    or o.get("order_status_name")
-                    or str(o.get("order_status_id") or "")
-                )
-
-                if not order_id or not status:
+                if not order_id:
                     continue
 
+                # BaseLinker suele traer order_status_id (int)
+                raw_status_id = o.get("order_status_id")
+                status_name = None
+
+                if raw_status_id is not None:
+                    try:
+                        status_name = status_map.get(int(raw_status_id), str(raw_status_id))
+                    except Exception:
+                        status_name = str(raw_status_id)
+
+                # fallback si tu cuenta manda nombre directo
+                status_name = status_name or o.get("order_status_name") or o.get("order_status") or o.get("status")
+                if not status_name:
+                    continue
+
+                # Estado anterior (para dedupe)
+                cur.execute("SELECT status FROM orders_current WHERE order_id=%s", (order_id,))
+                prev = cur.fetchone()
+                prev_status = prev[0] if prev else None
+
+                # Upsert estado actual
                 cur.execute(
-                    "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
-                    (order_id, status)
+                    """
+                    INSERT INTO orders_current(order_id, status, updated_ts)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT(order_id) DO UPDATE
+                    SET status=EXCLUDED.status, updated_ts=EXCLUDED.updated_ts
+                    """,
+                    (order_id, status_name),
                 )
-                inserted += 1
 
-    return {
-        "ok": True,
-        "orders_received": len(orders),
-        "events_inserted": inserted
-    }
+                # Insert evento solo si cambió
+                if prev_status != status_name:
+                    changed += 1
+                    cur.execute(
+                        "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
+                        (order_id, status_name),
+                    )
+                    events_inserted += 1
 
-
-# ===============================
-# FRONTEND
-# ===============================
-
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    with open("app/static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    return {"ok": True, "orders_received": len(orders), "changed": changed, "events_inserted": events_inserted}
