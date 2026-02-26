@@ -453,7 +453,8 @@ def _run_sync() -> dict:
 
     # 4) Snapshot KPI — una sola vez, después de que todos los batches se grabaron
     now         = datetime.now(timezone.utc)
-    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    now_local   = datetime.now(LOCAL_TZ)
+    today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
@@ -633,7 +634,8 @@ def cleanup_snapshots():
     return JSONResponse({"deleted": before - after, "remaining": after})
     """Fuerza el recálculo del snapshot KPI sin correr sync completo. Solo para diagnóstico."""
     now         = datetime.now(timezone.utc)
-    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    now_local   = datetime.now(LOCAL_TZ)
+    today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
@@ -864,4 +866,3 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 @app.get("/", response_class=HTMLResponse)
 def home():
     return _render_index_html()
-railway up
