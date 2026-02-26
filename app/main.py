@@ -1054,6 +1054,182 @@ def pending_orders(limit: int = 200):
         for r in rows
     ]
 
+
+# ===============================
+# ALERTAS
+# ===============================
+@app.get("/api/alerts")
+def alerts():
+    """Pedidos en preparación hace más de 2hs."""
+    prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"]
+    cutoff_2h = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    q = """
+    SELECT
+        oc.order_id,
+        oc.status,
+        COALESCE(oc.status_since, oc.updated_ts) AS since,
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(oc.status_since, oc.updated_ts))) / 60.0 AS mins,
+        COALESCE(
+            json_agg(
+                json_build_object('name', COALESCE(NULLIF(oi.name,''),'(sin nombre)'), 'quantity', oi.quantity)
+                ORDER BY oi.name
+            ) FILTER (WHERE oi.order_product_id IS NOT NULL),
+            '[]'::json
+        ) AS products
+    FROM orders_current oc
+    LEFT JOIN order_items oi ON oi.order_id = oc.order_id
+    WHERE oc.status = ANY(%s)
+      AND oc.status <> ALL(%s)
+      AND COALESCE(oc.status_since, oc.updated_ts) < %s
+    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts
+    ORDER BY since ASC
+    LIMIT 50
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (prep_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h))
+            rows = cur.fetchall()
+
+    return JSONResponse({
+        "count": len(rows),
+        "orders": [
+            {
+                "order_id": r[0],
+                "status":   r[1],
+                "since":    r[2].isoformat(),
+                "mins":     round(float(r[3]), 0),
+                "products": r[4],
+            }
+            for r in rows
+        ]
+    })
+
+
+# ===============================
+# PRODUCTIVIDAD POR DÍA
+# ===============================
+@app.get("/api/productivity")
+def productivity(days: int = 7):
+    """Pedidos despachados por día en los últimos N días."""
+    since = datetime.now(LOCAL_TZ) - timedelta(days=days)
+    since_utc = since.astimezone(timezone.utc)
+
+    q = """
+    SELECT
+        (event_ts::timestamptz AT TIME ZONE %s)::date AS day_local,
+        COUNT(DISTINCT order_id)::int AS shipped
+    FROM order_events
+    WHERE status = ANY(%s)
+      AND status <> ALL(%s)
+      AND event_ts::timestamptz >= %s
+    GROUP BY 1
+    ORDER BY 1 ASC
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], since_utc))
+            rows = cur.fetchall()
+
+    return [{"day": str(r[0]), "shipped": r[1]} for r in rows]
+
+
+# ===============================
+# TIEMPO PROMEDIO POR ETAPA
+# ===============================
+@app.get("/api/stage-times")
+def stage_times(days: int = 7):
+    """
+    Tiempo promedio que un pedido pasa en cada etapa,
+    calculado desde los eventos de los últimos N días.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Para cada pedido, calculamos el tiempo entre el primer evento de cada bucket
+    # y el primer evento del bucket siguiente
+    q = """
+    WITH events_bucketed AS (
+        SELECT
+            order_id,
+            event_ts::timestamptz AS ts,
+            CASE
+                WHEN status = ANY(%s) THEN 'PREPARACION'
+                WHEN status = ANY(%s) THEN 'EMBALADO'
+                WHEN status = ANY(%s) THEN 'DESPACHO'
+                WHEN status = ANY(%s) THEN 'ENVIADO'
+            END AS bucket
+        FROM order_events
+        WHERE event_ts::timestamptz >= %s
+          AND status <> ALL(%s)
+    ),
+    first_per_bucket AS (
+        SELECT order_id, bucket, MIN(ts) AS first_ts
+        FROM events_bucketed
+        WHERE bucket IS NOT NULL
+        GROUP BY order_id, bucket
+    ),
+    transitions AS (
+        SELECT
+            a.order_id,
+            a.bucket AS from_bucket,
+            b.bucket AS to_bucket,
+            EXTRACT(EPOCH FROM (b.first_ts - a.first_ts)) / 60.0 AS mins
+        FROM first_per_bucket a
+        JOIN first_per_bucket b ON b.order_id = a.order_id AND b.first_ts > a.first_ts
+        WHERE (a.bucket = 'PREPARACION' AND b.bucket = 'EMBALADO')
+           OR (a.bucket = 'EMBALADO'    AND b.bucket = 'DESPACHO')
+           OR (a.bucket = 'DESPACHO'    AND b.bucket = 'ENVIADO')
+           OR (a.bucket = 'PREPARACION' AND b.bucket = 'ENVIADO')
+    ),
+    min_transitions AS (
+        SELECT order_id, from_bucket, to_bucket, MIN(mins) AS mins
+        FROM transitions
+        GROUP BY order_id, from_bucket, to_bucket
+    )
+    SELECT
+        from_bucket,
+        to_bucket,
+        ROUND(AVG(mins)::numeric, 1)  AS avg_mins,
+        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY mins)::numeric, 1) AS median_mins,
+        COUNT(*)::int AS sample
+    FROM min_transitions
+    WHERE mins > 0 AND mins < 1440  -- ignorar outliers > 24hs
+    GROUP BY from_bucket, to_bucket
+    ORDER BY from_bucket, to_bucket
+    """
+
+    prep_all = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (
+                prep_all,
+                STATUS_MAP["EMBALADO"],
+                STATUS_MAP["DESPACHO"],
+                STATUS_MAP["ENVIADO"],
+                since,
+                EXCLUDED_STATUSES or ["__never__"],
+            ))
+            rows = cur.fetchall()
+
+    labels = {
+        ("PREPARACION", "EMBALADO"):  "Prep → Embalado",
+        ("EMBALADO",    "DESPACHO"):  "Embalado → Despacho",
+        ("DESPACHO",    "ENVIADO"):   "Despacho → Enviado",
+        ("PREPARACION", "ENVIADO"):   "Prep → Enviado (total)",
+    }
+
+    return [
+        {
+            "stage":      labels.get((r[0], r[1]), f"{r[0]} → {r[1]}"),
+            "avg_mins":   float(r[2]),
+            "median_mins": float(r[3]),
+            "sample":     r[4],
+        }
+        for r in rows
+    ]
+
+
 # ===============================
 # FRONT
 # ===============================

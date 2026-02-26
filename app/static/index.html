@@ -418,6 +418,100 @@
     }
     .tv-link:hover { color: var(--text); border-color: rgba(255,255,255,.2); }
 
+
+    /* ── Alertas ─────────────────────────────────────────────── */
+    .alert-banner {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      background: linear-gradient(90deg, rgba(214,69,69,.18), rgba(214,69,69,.08));
+      border: 1px solid rgba(214,69,69,.4);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    .alert-banner:hover { background: linear-gradient(90deg, rgba(214,69,69,.25), rgba(214,69,69,.12)); }
+    .alert-banner.visible { display: flex; }
+    .alert-icon { font-size: 22px; flex-shrink: 0; }
+    .alert-text { flex: 1; }
+    .alert-title { font-size: 15px; font-weight: 700; color: #ffb3b3; }
+    .alert-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .alert-expand { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+
+    .alert-detail {
+      display: none;
+      background: rgba(214,69,69,.07);
+      border: 1px solid rgba(214,69,69,.25);
+      border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      max-height: 260px;
+      overflow-y: auto;
+      margin-top: -12px;
+      margin-bottom: 12px;
+    }
+    .alert-detail.open { display: block; }
+    .alert-detail table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .alert-detail th { font-size: 11px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+    .alert-detail td { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,.04); }
+    .alert-detail tr:last-child td { border-bottom: none; }
+    .alert-mins { color: #ffb3b3; font-weight: 700; }
+
+    /* ── Productividad y tiempos ────────────────────────────── */
+    .grid-analytics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .bar-chart { margin-top: 8px; }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 70px 1fr 48px;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 7px;
+    }
+    .bar-label { font-size: 12px; color: var(--muted); text-align: right; }
+    .bar-track {
+      height: 20px;
+      background: rgba(255,255,255,.04);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 5px;
+      background: linear-gradient(90deg, #3b5fc0, #58a6ff);
+      transition: width .5s cubic-bezier(.4,0,.2,1);
+    }
+    .bar-val { font-size: 12px; font-weight: 700; text-align: right; color: var(--text); }
+
+    .stage-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    .stage-table th { font-size: 11px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+    .stage-table td { padding: 9px 8px; border-bottom: 1px solid var(--line); }
+    .stage-table tr:last-child td { border-bottom: none; }
+    .stage-table td.num { text-align: right; }
+    .stage-name { font-weight: 600; }
+    .time-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .time-good { background: rgba(56,211,159,.12); color: #3dd68c; }
+    .time-warn { background: rgba(224,168,0,.12);  color: #e0a800; }
+    .time-bad  { background: rgba(214,69,69,.12);  color: #d64545; }
+
+    @media (max-width: 1200px) {
+      .grid-analytics { grid-template-columns: 1fr; }
+    }
+    body.tv-mode .alert-banner { font-size: 15px; }
+    body.tv-mode .alert-title  { font-size: 18px; }
+    body.tv-mode .grid-analytics { display: none; }
+
   </style>
 </head>
 <body>
@@ -436,6 +530,16 @@
     <div class="refresh-bar-wrap">
       <div class="refresh-bar" id="refreshBar" style="width:100%"></div>
     </div>
+
+    <div class="alert-banner" id="alertBanner" onclick="toggleAlertDetail()">
+      <div class="alert-icon">🚨</div>
+      <div class="alert-text">
+        <div class="alert-title" id="alertTitle">—</div>
+        <div class="alert-sub" id="alertSub">—</div>
+      </div>
+      <div class="alert-expand" id="alertExpand">▼ Ver detalle</div>
+    </div>
+    <div class="alert-detail" id="alertDetail"></div>
 
     <div class="grid-kpi">
       <div class="card">
@@ -556,6 +660,23 @@
       </div>
       <div class="pending-table-wrap" id="pendingTableWrap">
         <div class="empty">Cargando…</div>
+      </div>
+    </div>
+
+    <div class="grid-analytics">
+      <div class="card">
+        <div class="card-title">
+          <div>Productividad diaria <span>(últimos 7 días)</span></div>
+          <span class="muted" id="productivityMeta">—</span>
+        </div>
+        <div class="bar-chart" id="productivityChart"><div class="empty">Cargando…</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <div>Tiempo promedio por etapa <span>(últimos 7 días)</span></div>
+          <span class="muted" id="stageTimesMeta">—</span>
+        </div>
+        <div id="stageTimesWrap"><div class="empty">Cargando…</div></div>
       </div>
     </div>
 
@@ -839,6 +960,7 @@
     }
 
     async function refreshTops() {
+      await Promise.all([refreshAlerts(), refreshProductivity(), refreshStageTimes()]);
       try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
@@ -858,6 +980,126 @@
       }
     }
 
+
+
+    // ── Alertas ────────────────────────────────────────────────────────────────
+    let alertOpen = false;
+    let alertData = [];
+
+    function toggleAlertDetail() {
+      alertOpen = !alertOpen;
+      const det = $('alertDetail');
+      const exp = $('alertExpand');
+      det.classList.toggle('open', alertOpen);
+      exp.textContent = alertOpen ? '▲ Ocultar' : '▼ Ver detalle';
+    }
+
+    function renderAlertDetail(orders) {
+      if (!orders || orders.length === 0) {
+        $('alertDetail').innerHTML = '';
+        return;
+      }
+      const rows = orders.map(o => {
+        const prods = (o.products || []).map(p => `${escapeHtml(p.name)} ×${p.quantity}`).join(', ');
+        const hs = Math.floor(o.mins / 60);
+        const ms = Math.round(o.mins % 60);
+        const timeStr = hs > 0 ? `${hs}h ${ms}m` : `${ms}m`;
+        return `<tr>
+          <td><b>#${escapeHtml(o.order_id)}</b></td>
+          <td>${escapeHtml(o.status)}</td>
+          <td class="alert-mins">${timeStr}</td>
+          <td style="color:var(--muted);font-size:12px">${escapeHtml(prods)}</td>
+        </tr>`;
+      }).join('');
+      $('alertDetail').innerHTML = `
+        <table>
+          <thead><tr><th>Pedido</th><th>Estado</th><th>Tiempo</th><th>Productos</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function refreshAlerts() {
+      try {
+        const data = await fetchJson('/api/alerts');
+        const banner = $('alertBanner');
+        if (data.count > 0) {
+          banner.classList.add('visible');
+          $('alertTitle').textContent = `⚠️ ${data.count} pedido${data.count > 1 ? 's' : ''} hace más de 2hs en preparación`;
+          const oldest = data.orders[0];
+          const hs = Math.floor(oldest.mins / 60);
+          const ms = Math.round(oldest.mins % 60);
+          $('alertSub').textContent = `El más antiguo: #${oldest.order_id} — ${hs}h ${ms}m en "${oldest.status}"`;
+          alertData = data.orders;
+          if (alertOpen) renderAlertDetail(alertData);
+        } else {
+          banner.classList.remove('visible');
+          $('alertDetail').classList.remove('open');
+          alertOpen = false;
+        }
+      } catch(e) { console.error('alerts error', e); }
+    }
+
+    // ── Productividad ──────────────────────────────────────────────────────────
+    function fmtDay(dateStr) {
+      const d = new Date(dateStr + 'T12:00:00');
+      return d.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
+    }
+
+    async function refreshProductivity() {
+      try {
+        const data = await fetchJson('/api/productivity?days=7');
+        if (!data || data.length === 0) {
+          $('productivityChart').innerHTML = '<div class="empty">Sin datos todavía.</div>';
+          return;
+        }
+        const max = Math.max(...data.map(d => d.shipped), 1);
+        const bars = data.map(d => `
+          <div class="bar-row">
+            <div class="bar-label">${fmtDay(d.day)}</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:${Math.round(d.shipped/max*100)}%"></div>
+            </div>
+            <div class="bar-val">${d.shipped}</div>
+          </div>`).join('');
+        $('productivityChart').innerHTML = bars;
+        $('productivityMeta').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('productivity error', e); }
+    }
+
+    // ── Tiempos por etapa ──────────────────────────────────────────────────────
+    function timePillClass(mins) {
+      if (mins < 30)  return 'time-good';
+      if (mins < 120) return 'time-warn';
+      return 'time-bad';
+    }
+
+    function fmtAvgTime(mins) {
+      if (mins < 60) return Math.round(mins) + ' min';
+      return Math.floor(mins/60) + 'h ' + Math.round(mins%60) + 'm';
+    }
+
+    async function refreshStageTimes() {
+      try {
+        const data = await fetchJson('/api/stage-times?days=7');
+        if (!data || data.length === 0) {
+          $('stageTimesWrap').innerHTML = '<div class="empty">Sin datos suficientes todavía.</div>';
+          return;
+        }
+        const rows = data.map(d => `
+          <tr>
+            <td class="stage-name">${escapeHtml(d.stage)}</td>
+            <td><span class="time-pill ${timePillClass(d.avg_mins)}">${fmtAvgTime(d.avg_mins)}</span></td>
+            <td class="num"><span class="time-pill ${timePillClass(d.median_mins)}">${fmtAvgTime(d.median_mins)}</span></td>
+            <td class="num muted">${d.sample}</td>
+          </tr>`).join('');
+        $('stageTimesWrap').innerHTML = `
+          <table class="stage-table">
+            <thead><tr><th>Etapa</th><th>Promedio</th><th>Mediana</th><th class="num">Muestra</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+        $('stageTimesMeta').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR', { hour12: false });
+      } catch(e) { console.error('stage-times error', e); }
+    }
 
     // ── Pedidos pendientes ─────────────────────────────────────────────────────
     let pendingData = [];
@@ -974,6 +1216,9 @@
       }
       await refreshTops();
       await refreshPending();
+      await refreshAlerts();
+      await refreshProductivity();
+      await refreshStageTimes();
     })();
 
   </script>
