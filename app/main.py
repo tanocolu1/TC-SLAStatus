@@ -559,8 +559,39 @@ def sync(request: Request):
 # ===============================
 # DIAGNÓSTICO (temporal)
 # ===============================
-@app.get("/api/debug")
-def debug():
+@app.get("/api/debug/enviados")
+def debug_enviados():
+    from datetime import datetime
+    now_local   = datetime.now(LOCAL_TZ)
+    today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(DISTINCT order_id),
+                       MIN(event_ts::timestamptz),
+                       MAX(event_ts::timestamptz)
+                FROM order_events
+                WHERE status = ANY(%s)
+                  AND event_ts::timestamptz >= %s
+            """, (STATUS_MAP["ENVIADO"], today_start))
+            row = cur.fetchone()
+            cur.execute("""
+                SELECT order_id, event_ts::timestamptz
+                FROM order_events
+                WHERE status = ANY(%s)
+                  AND event_ts::timestamptz >= %s
+                ORDER BY event_ts ASC
+                LIMIT 5
+            """, (STATUS_MAP["ENVIADO"], today_start))
+            primeros = cur.fetchall()
+    return JSONResponse({
+        "today_start_arg": today_start.isoformat(),
+        "now_arg": now_local.isoformat(),
+        "count": row[0],
+        "min_event_ts": row[1].isoformat() if row[1] else None,
+        "max_event_ts": row[2].isoformat() if row[2] else None,
+        "primeros_5": [{"order_id": r[0], "event_ts": r[1].isoformat()} for r in primeros],
+    })
     now = datetime.now(timezone.utc)
     result = {"server_now_utc": now.isoformat()}
 
