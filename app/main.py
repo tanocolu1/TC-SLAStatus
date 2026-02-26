@@ -155,6 +155,7 @@ def home():
     with open("app/static/index.html", "r", encoding="utf-8") as f:
         return f.read()
     @app.post("/sync")
+@app.post("/sync")
 def sync(request: Request):
     # Seguridad básica
     if SYNC_SECRET:
@@ -165,50 +166,43 @@ def sync(request: Request):
     if not BL_TOKEN:
         raise HTTPException(status_code=500, detail="BL_TOKEN not configured")
 
-    now_ts = int(time.time())
-
-    # Traer órdenes desde el inicio (después optimizamos)
     payload = {
         "method": "getOrders",
         "parameters": json.dumps({
-            "date_confirmed_from": 0
+            "date_confirmed_from": 0,
+            "get_unconfirmed_orders": True
         })
     }
 
-    headers = {
-        "X-BLToken": BL_TOKEN
-    }
+    headers = {"X-BLToken": BL_TOKEN}
 
     r = requests.post(BL_API_URL, headers=headers, data=payload, timeout=30)
-    data = r.json()
+
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(status_code=500, detail={"error": "Non-JSON response", "status_code": r.status_code, "text": r.text[:500]})
 
     if data.get("status") != "SUCCESS":
         raise HTTPException(status_code=500, detail=data)
 
     orders = data.get("orders", [])
-
     inserted = 0
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             for o in orders:
-                order_id = str(o.get("order_id"))
-                status = o.get("order_status") or o.get("status") or ""
+                order_id = str(o.get("order_id") or o.get("id") or "")
+                # OJO: el campo de status puede variar, esto es “mejor esfuerzo” hasta ver un ejemplo real
+                status = o.get("order_status") or o.get("status") or o.get("order_status_name") or str(o.get("order_status_id") or "")
 
                 if not order_id or not status:
                     continue
 
                 cur.execute(
-                    """
-                    INSERT INTO order_events(order_id, status, event_ts)
-                    VALUES (%s, %s, NOW())
-                    """,
+                    "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
                     (order_id, status)
                 )
                 inserted += 1
 
-    return {
-        "ok": True,
-        "orders_received": len(orders),
-        "events_inserted": inserted
-    }
+    return {"ok": True, "orders_received": len(orders), "events_inserted": inserted}    
