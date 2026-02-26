@@ -657,7 +657,7 @@
     </div>
 
 
-    <div class="grid-bottom">
+    <div class="grid-bottom" style="grid-template-columns: 1fr 1fr 1fr;">
       <div class="card">
         <div class="card-title">
           <div>Top 10 artículos vendidos <span>(últimos 7 días)</span></div>
@@ -668,10 +668,18 @@
 
       <div class="card">
         <div class="card-title">
-          <div>Top 6 embaladores <span>(hoy)</span></div>
+          <div>Top embaladores <span>(hoy)</span></div>
           <span class="muted" id="topPackersMeta">—</span>
         </div>
         <div id="topPackersWrap"><div class="empty">Cargando…</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <div>Top buscadores <span>(hoy)</span></div>
+          <span class="muted" id="topPickersMeta">—</span>
+        </div>
+        <div id="topPickersWrap"><div class="empty">Cargando…</div></div>
       </div>
     </div>
 
@@ -785,6 +793,38 @@
               <th>Artículo</th>
               <th class="num">Unid.</th>
               <th class="num">Pedidos</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    function renderTopPickers(items) {
+      if (!items || items.length === 0) {
+        return `<div class="empty">Sin datos todavía — esperá el próximo sync.</div>`;
+      }
+      const max = Math.max(...items.map(i => i.orders_picked), 1);
+      const rows = items.map((it, idx) => `
+        <tr>
+          <td class="row-rank">${idx + 1}</td>
+          <td>
+            <div class="name">${escapeHtml(it.user || "")}</div>
+          </td>
+          <td class="num">${it.orders_picked}</td>
+          <td style="width:80px">
+            <div style="height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${Math.round(it.orders_picked/max*100)}%;background:linear-gradient(90deg,#b07d12,#e0a800);border-radius:3px"></div>
+            </div>
+          </td>
+        </tr>`).join("");
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th style="width:32px">#</th>
+              <th>Usuario</th>
+              <th class="num">Pedidos</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -1006,6 +1046,15 @@
       } catch (e) {
         console.error("top-packers error", e);
         $("topPackersWrap").innerHTML = `<div class="empty">Error cargando top embaladores.</div>`;
+      }
+
+      try {
+        const pi = await fetchJson("/api/top-pickers?days=1&limit=10");
+        $("topPickersWrap").innerHTML = renderTopPickers(pi);
+        $("topPickersMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", { hour12: false });
+      } catch (e) {
+        console.error("top-pickers error", e);
+        $("topPickersWrap").innerHTML = `<div class="empty">Error cargando top buscadores.</div>`;
       }
     }
 

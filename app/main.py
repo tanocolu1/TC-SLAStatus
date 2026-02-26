@@ -238,6 +238,19 @@ def _ensure_schema() -> None:
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_event_ts  ON order_events(event_ts);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_status    ON order_events(status);")
+            # Migrar: agregar user_login a order_events si no existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'order_events' AND column_name = 'user_login'
+                  ) THEN
+                    ALTER TABLE order_events ADD COLUMN user_login TEXT NULL;
+                  END IF;
+                END $$;
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_order_events_user_login ON order_events(user_login);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_meta_date_conf  ON orders_meta(date_confirmed);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id   ON order_items(order_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_sku        ON order_items(sku);")
@@ -385,15 +398,15 @@ def _run_sync() -> dict:
                 date_in_status = datetime.fromtimestamp(int(dis), tz=timezone.utc) if dis else None
 
                 meta_rows.append((order_id, date_confirmed, date_add))
+                user_login = (o.get("user_login") or "").strip() or None
                 current_rows.append((order_id, status_name, date_in_status))
 
                 prev_status = current_statuses.get(order_id)
                 if prev_status != status_name:
                     b_changed += 1
-                    # Usar date_in_status como event_ts si está disponible
                     event_ts = date_in_status or datetime.now(timezone.utc)
-                    event_rows.append((order_id, status_name, event_ts))
-                    current_statuses[order_id] = status_name  # actualizar cache local
+                    event_rows.append((order_id, status_name, event_ts, user_login))
+                    current_statuses[order_id] = status_name
 
                 # --- items ---
                 for p in (o.get("products") or []):
@@ -450,7 +463,7 @@ def _run_sync() -> dict:
                     )
                     if event_rows:
                         cur.executemany(
-                            "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, %s)",
+                            "INSERT INTO order_events(order_id, status, event_ts, user_login) VALUES (%s, %s, %s, %s)",
                             event_rows,
                         )
                         b_events += len(event_rows)
@@ -1216,6 +1229,48 @@ def stage_times(days: int = 7):
         for r in rows
     ]
 
+
+
+# ===============================
+# RANKING BUSCADORES
+# ===============================
+@app.get("/api/top-pickers")
+def top_pickers(days: int = 1, limit: int = 10):
+    """Ranking de buscadores por pedidos procesados en estados de preparación."""
+    since = datetime.now(LOCAL_TZ) - timedelta(days=days)
+    since_utc = since.astimezone(timezone.utc)
+    picker_statuses = STATUS_MAP["PREPARACION"]  # Colecta, Flex, Turbo, Recolectando
+
+    q = """
+    SELECT
+        user_login,
+        COUNT(DISTINCT order_id)::int AS orders_picked,
+        MIN(event_ts)::timestamptz    AS first_event,
+        MAX(event_ts)::timestamptz    AS last_event
+    FROM order_events
+    WHERE status = ANY(%s)
+      AND user_login IS NOT NULL
+      AND user_login <> ''
+      AND event_ts::timestamptz >= %s
+    GROUP BY user_login
+    ORDER BY orders_picked DESC
+    LIMIT %s
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (picker_statuses, since_utc, limit))
+            rows = cur.fetchall()
+
+    return [
+        {
+            "user":          r[0],
+            "orders_picked": r[1],
+            "first_event":   r[2].isoformat(),
+            "last_event":    r[3].isoformat(),
+        }
+        for r in rows
+    ]
 
 # ===============================
 # FRONT
