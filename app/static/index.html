@@ -752,7 +752,6 @@
     }
 
     async function refreshTops() {
-      await refreshPending();
       try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
@@ -889,6 +888,7 @@
       await refreshTops();
       await refreshPending();
     })();
+
   </script>
 </body>
 </html>
