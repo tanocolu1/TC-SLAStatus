@@ -15,7 +15,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import psycopg
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -602,12 +602,13 @@ def _run_sync() -> dict:
 
 
 @app.post("/sync")
-def sync(request: Request):
-    """Endpoint manual — útil para forzar un sync desde fuera o para crons externos."""
+async def sync(request: Request, background_tasks: BackgroundTasks):
+    """Endpoint manual — dispara sync en background y devuelve inmediatamente."""
     if SYNC_SECRET:
         if request.headers.get("X-Sync-Secret") != SYNC_SECRET:
             raise HTTPException(status_code=401, detail="Unauthorized")
-    return _run_sync()
+    background_tasks.add_task(_run_sync)
+    return JSONResponse({"ok": True, "status": "sync iniciado en background"})
 
 
 # ===============================
