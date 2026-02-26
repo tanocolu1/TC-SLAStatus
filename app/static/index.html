@@ -1006,6 +1006,7 @@
         const m = await fetchJson("/api/metrics");
         lastSuccess = Date.now();
         consecutiveErrors = 0;
+        tvHadFirstSuccess = true;
         markStale(false);
         resetTvReloadTimer();
         applyMetrics(m);
@@ -1046,7 +1047,7 @@
 
     // ── Loop robusto con auto-reconexión ──────────────────────────────────────
     let consecutiveErrors = 0;
-    const MAX_ERRORS = 5;
+    const MAX_ERRORS = 10;
 
     function startKpiLoop(intervalMs) {
       if (kpiTimer) clearInterval(kpiTimer);
@@ -1101,10 +1102,10 @@
 
     // ── Recarga de página en TV si lleva mucho tiempo sin datos ───────────────
     let tvReloadTimer = null;
+    let tvHadFirstSuccess = false;
     function resetTvReloadTimer() {
-      if (!IS_TV) return;
+      if (!IS_TV || !tvHadFirstSuccess) return;
       if (tvReloadTimer) clearTimeout(tvReloadTimer);
-      // Si en 5 minutos no hubo datos, recargar la página completa
       tvReloadTimer = setTimeout(() => {
         console.warn('TV: sin datos por 5min, recargando página…');
         location.reload();
