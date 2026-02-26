@@ -457,17 +457,19 @@ def _run_sync() -> dict:
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
-    WITH latest AS (
-      SELECT DISTINCT ON (order_id)
-        order_id, status, event_ts
-      FROM order_events
-      WHERE status <> ALL(%(excluidos)s)
-      ORDER BY order_id, event_ts::timestamptz DESC
+    WITH current_active AS (
+      -- Usar orders_current directamente: refleja el estado real de cada pedido hoy
+      SELECT
+        oc.order_id,
+        oc.status,
+        oc.updated_ts AS event_ts
+      FROM orders_current oc
+      WHERE oc.status <> ALL(%(excluidos)s)
     ),
     bucketed AS (
       SELECT
         order_id,
-        event_ts::timestamptz AS event_ts,
+        event_ts,
         CASE
           WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
           WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
@@ -479,7 +481,7 @@ def _run_sync() -> dict:
           WHEN status = ANY(%(cerr)s)   THEN 'CERRADOS'
           ELSE 'OTROS'
         END AS bucket
-      FROM latest
+      FROM current_active
     )
     SELECT
       (SELECT COUNT(*) FROM bucketed
@@ -492,9 +494,9 @@ def _run_sync() -> dict:
          AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
-         AND event_ts::timestamptz < %(late_cutoff)s)                  AS atrasados_24h,
+         AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
       (SELECT COALESCE(
-         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
+         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
        ) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
     """
@@ -635,17 +637,18 @@ def cleanup_snapshots():
     late_cutoff = now - timedelta(hours=24)
 
     kpi_sql = """
-    WITH latest AS (
-      SELECT DISTINCT ON (order_id)
-        order_id, status, event_ts
-      FROM order_events
-      WHERE status <> ALL(%(excluidos)s)
-      ORDER BY order_id, event_ts::timestamptz DESC
+    WITH current_active AS (
+      SELECT
+        oc.order_id,
+        oc.status,
+        oc.updated_ts AS event_ts
+      FROM orders_current oc
+      WHERE oc.status <> ALL(%(excluidos)s)
     ),
     bucketed AS (
       SELECT
         order_id,
-        event_ts::timestamptz AS event_ts,
+        event_ts,
         CASE
           WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
           WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
@@ -657,24 +660,24 @@ def cleanup_snapshots():
           WHEN status = ANY(%(cerr)s)   THEN 'CERRADOS'
           ELSE 'OTROS'
         END AS bucket
-      FROM latest
+      FROM current_active
     )
     SELECT
       (SELECT COUNT(*) FROM bucketed
-       WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))      AS en_preparacion,
-      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')   AS embalados,
-      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')   AS en_despacho,
+       WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION'))           AS en_preparacion,
+      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'EMBALADO')        AS embalados,
+      (SELECT COUNT(*) FROM bucketed WHERE bucket = 'DESPACHO')        AS en_despacho,
       (SELECT COUNT(DISTINCT order_id) FROM order_events
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
-         AND event_ts::timestamptz >= %(today_start)s)            AS despachados_hoy,
+         AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
       (SELECT COUNT(*) FROM bucketed
        WHERE bucket = ANY(%(active_buckets)s)
-         AND event_ts::timestamptz < %(late_cutoff)s)             AS atrasados_24h,
+         AND event_ts < %(late_cutoff)s)                               AS atrasados_24h,
       (SELECT COALESCE(
-         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)) / 60.0), 0
+         AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)) / 60.0), 0
        ) FROM bucketed
-       WHERE bucket = ANY(%(active_buckets)s))                    AS avg_age_min
+       WHERE bucket = ANY(%(active_buckets)s))                        AS avg_age_min
     """
 
     kpi_params = {
