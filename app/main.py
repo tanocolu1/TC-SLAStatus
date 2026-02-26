@@ -94,7 +94,7 @@ def metrics():
       SELECT COUNT(*) AS c
       FROM order_events
       WHERE status = ANY(%(env)s)
-        AND event_ts >= %(today_start)s
+        AND event_ts::timestamptz >= %(today_start)s
     )
     SELECT
       (SELECT COUNT(*) FROM current WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION')) AS en_preparacion,
@@ -103,9 +103,9 @@ def metrics():
       (SELECT c FROM shipped_today) AS despachados_hoy,
       (SELECT COUNT(*) FROM current
         WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
-          AND event_ts < %(late_cutoff)s
+          AND event_ts::timestamptz < %(late_cutoff)s
       ) AS atrasados_24h,
-      (SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - event_ts)))/60.0, 0)
+      (SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - event_ts::timestamptz)))/60.0, 0)
         FROM current
         WHERE bucket IN ('NUEVOS','RECEPCION','PREPARACION','EMBALADO','DESPACHO')
       ) AS avg_age_min
