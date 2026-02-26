@@ -1605,12 +1605,13 @@
       try {
         const m = await fetchJson("/api/metrics");
         lastSuccess = Date.now();
+        tvHadFirstSuccess = true;
         applyMetrics(m);
-        const serverInterval = (m.refresh_seconds ?? 10) * 1000;
+        const serverInterval = IS_TV ? kpiIntervalMs : (m.refresh_seconds ?? 10) * 1000;
         startKpiLoop(serverInterval);
       } catch (e) {
         console.error("init metrics error", e);
-        startKpiLoop(kpiIntervalMs); // arranca igual con default
+        startKpiLoop(kpiIntervalMs);
       }
       await refreshTops();
       await refreshPending();
