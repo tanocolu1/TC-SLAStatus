@@ -305,13 +305,29 @@ def _run_sync() -> dict:
 
         from_ts = max_ts + 1
 
-    # 3) Persistencia: commit por pedido, rollback individual ante errores
+    # 3) Persistencia: preparar datos en memoria, luego batch upsert + commit cada 200 pedidos
     changed = 0
     events_inserted = 0
     errors = 0
 
+    BATCH_SIZE = 200
+
+    # Pre-cargar todos los estados actuales en memoria para evitar un SELECT por pedido
     with get_conn() as conn:
-        for o in all_orders:
+        with conn.cursor() as cur:
+            cur.execute("SELECT order_id, status FROM orders_current")
+            current_statuses: dict[str, str] = {r[0]: r[1] for r in cur.fetchall()}
+
+    def _process_batch(batch_orders: list) -> tuple[int, int, int]:
+        """Upsert un batch de pedidos en una sola transacción. Devuelve (changed, events, errors)."""
+        b_changed = b_events = b_errors = 0
+
+        meta_rows   = []
+        current_rows = []
+        event_rows  = []
+        item_rows   = []
+
+        for o in batch_orders:
             order_id = str(o.get("order_id") or o.get("id") or "")
             if not order_id:
                 continue
@@ -340,8 +356,43 @@ def _run_sync() -> dict:
                 date_confirmed = datetime.fromtimestamp(int(dc), tz=timezone.utc) if dc else None
                 date_add       = datetime.fromtimestamp(int(da), tz=timezone.utc) if da else None
 
+                meta_rows.append((order_id, date_confirmed, date_add))
+                current_rows.append((order_id, status_name))
+
+                prev_status = current_statuses.get(order_id)
+                if prev_status != status_name:
+                    b_changed += 1
+                    event_rows.append((order_id, status_name))
+                    current_statuses[order_id] = status_name  # actualizar cache local
+
+                # --- items ---
+                for p in (o.get("products") or []):
+                    opid = p.get("order_product_id")
+                    if opid is None:
+                        continue
+                    try:
+                        opid_int = int(opid)
+                    except Exception:
+                        continue
+                    item_rows.append((
+                        opid_int, order_id,
+                        p.get("sku") or "",
+                        p.get("name") or "",
+                        int(p.get("quantity") or 0),
+                        float(p.get("price_brutto") or 0.0),
+                    ))
+
+            except Exception as exc:
+                logger.error("Error preparando order_id=%s: %s", order_id, exc)
+                b_errors += 1
+
+        if not meta_rows:
+            return b_changed, b_events, b_errors
+
+        try:
+            with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
+                    cur.executemany(
                         """
                         INSERT INTO orders_meta(order_id, date_confirmed, date_add, updated_ts)
                         VALUES (%s, %s, %s, NOW())
@@ -350,14 +401,9 @@ def _run_sync() -> dict:
                             date_add       = EXCLUDED.date_add,
                             updated_ts     = EXCLUDED.updated_ts
                         """,
-                        (order_id, date_confirmed, date_add),
+                        meta_rows,
                     )
-
-                    cur.execute("SELECT status FROM orders_current WHERE order_id = %s", (order_id,))
-                    prev = cur.fetchone()
-                    prev_status = prev[0] if prev else None
-
-                    cur.execute(
+                    cur.executemany(
                         """
                         INSERT INTO orders_current(order_id, status, updated_ts)
                         VALUES (%s, %s, NOW())
@@ -365,28 +411,16 @@ def _run_sync() -> dict:
                         SET status     = EXCLUDED.status,
                             updated_ts = EXCLUDED.updated_ts
                         """,
-                        (order_id, status_name),
+                        current_rows,
                     )
-
-                    if prev_status != status_name:
-                        changed += 1
-                        cur.execute(
+                    if event_rows:
+                        cur.executemany(
                             "INSERT INTO order_events(order_id, status, event_ts) VALUES (%s, %s, NOW())",
-                            (order_id, status_name),
+                            event_rows,
                         )
-                        events_inserted += 1
-
-                    # --- items ---
-                    for p in (o.get("products") or []):
-                        opid = p.get("order_product_id")
-                        if opid is None:
-                            continue
-                        try:
-                            opid_int = int(opid)
-                        except Exception:
-                            continue
-
-                        cur.execute(
+                        b_events += len(event_rows)
+                    if item_rows:
+                        cur.executemany(
                             """
                             INSERT INTO order_items(
                               order_product_id, order_id, sku, name,
@@ -401,22 +435,21 @@ def _run_sync() -> dict:
                                 price_brutto = EXCLUDED.price_brutto,
                                 updated_ts   = EXCLUDED.updated_ts
                             """,
-                            (
-                                opid_int,
-                                order_id,
-                                p.get("sku") or "",
-                                p.get("name") or "",
-                                int(p.get("quantity") or 0),
-                                float(p.get("price_brutto") or 0.0),
-                            ),
+                            item_rows,
                         )
-
                 conn.commit()
+        except Exception as exc:
+            logger.error("Error en batch upsert: %s", exc)
+            b_errors += len(meta_rows)
 
-            except Exception as exc:
-                logger.error("Error procesando order_id=%s: %s", order_id, exc)
-                conn.rollback()
-                errors += 1
+        return b_changed, b_events, b_errors
+
+    # Procesar en batches de BATCH_SIZE
+    for i in range(0, len(all_orders), BATCH_SIZE):
+        bc, be, berr = _process_batch(all_orders[i : i + BATCH_SIZE])
+        changed         += bc
+        events_inserted += be
+        errors          += berr
 
         # 4) Snapshot KPI — fuera del loop de pedidos
         now         = datetime.now(timezone.utc)
