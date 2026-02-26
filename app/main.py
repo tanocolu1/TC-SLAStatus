@@ -1016,7 +1016,7 @@ def pending_orders(limit: int = 200):
     WHERE oc.status = ANY(%s)
       AND oc.status <> ALL(%s)
     GROUP BY oc.order_id, oc.status, oc.updated_ts
-    ORDER BY oc.updated_ts ASC
+    ORDER BY oc.order_id::bigint DESC
     LIMIT %s
     """
     with get_conn() as conn:
