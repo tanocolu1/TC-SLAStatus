@@ -103,12 +103,16 @@ def get_conn() -> psycopg.Connection:
 
 
 # ===============================
-# HTML estático cacheado en memoria
+# HTML estático con inyección de secret
 # ===============================
 @lru_cache(maxsize=1)
-def _load_index_html() -> str:
+def _load_index_html_raw() -> str:
     with open("app/static/index.html", "r", encoding="utf-8") as f:
         return f.read()
+
+def _render_index_html() -> str:
+    """Reemplaza el placeholder del secret antes de servir el HTML."""
+    return _load_index_html_raw().replace("__SYNC_SECRET__", SYNC_SECRET, 1)
 
 
 # ===============================
@@ -641,4 +645,4 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return _load_index_html()
+    return _render_index_html()
