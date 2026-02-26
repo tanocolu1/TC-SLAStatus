@@ -221,3 +221,6 @@ def sync(request: Request):
                     events_inserted += 1
 
     return {"ok": True, "orders_received": len(orders), "changed": changed, "events_inserted": events_inserted}
+@app.get("/internal-sync")
+def internal_sync():
+    return sync(Request({"type": "http"}))
