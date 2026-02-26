@@ -508,7 +508,20 @@
     @media (max-width: 1200px) {
       .grid-analytics { grid-template-columns: 1fr; }
     }
-    body.tv-mode .alert-banner { font-size: 15px; }
+
+    /* Alerta en modo TV — más grande, sin expandir */
+    body.tv-mode .alert-banner {
+      padding: 18px 24px;
+      margin-bottom: 14px;
+      cursor: default;
+      pointer-events: none;
+    }
+    body.tv-mode .alert-icon  { font-size: 32px; }
+    body.tv-mode .alert-title { font-size: 22px; }
+    body.tv-mode .alert-sub   { font-size: 15px; margin-top: 4px; }
+    body.tv-mode .alert-expand { display: none; }
+    body.tv-mode .alert-detail { display: none !important; }
+
     body.tv-mode .alert-title  { font-size: 18px; }
     body.tv-mode .grid-analytics { display: none; }
 
