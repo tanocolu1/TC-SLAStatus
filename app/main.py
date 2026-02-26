@@ -103,7 +103,16 @@ _http = _make_session()
 def get_conn() -> psycopg.Connection:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL no configurado")
-    return psycopg.connect(DATABASE_URL, connect_timeout=5)
+    last_exc = None
+    for attempt in range(3):
+        try:
+            return psycopg.connect(DATABASE_URL, connect_timeout=5)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                import time as _time
+                _time.sleep(1 * (attempt + 1))
+    raise last_exc
 
 
 # ===============================
@@ -148,48 +157,13 @@ async def _auto_sync_loop() -> None:
     except Exception as exc:
         logger.error("Auto-sync inicial falló: %s", exc)
 
-    last_cleanup_date = None
-
     while True:
         await asyncio.sleep(AUTO_SYNC_EVERY)
-
-        # Limpieza a medianoche ARG
-        now_local = datetime.now(LOCAL_TZ)
-        today_date = now_local.date()
-        if last_cleanup_date != today_date and now_local.hour == 0:
-            try:
-                deleted = await asyncio.to_thread(_cleanup_bulk_events)
-                last_cleanup_date = today_date
-                logger.info("Limpieza bulk events: %d borrados", deleted)
-            except Exception as exc:
-                logger.error("Error en limpieza bulk events: %s", exc)
-
         try:
             result = await asyncio.to_thread(_run_sync)
             logger.info("Auto-sync OK: %s", result)
         except Exception as exc:
             logger.error("Auto-sync falló: %s", exc)
-
-
-def _cleanup_bulk_events() -> int:
-    """Borra eventos del sync inicial: rows donde 10+ pedidos tienen el mismo status
-    en el mismo segundo (bulk insert, no cambio real)."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                DELETE FROM order_events
-                WHERE id IN (
-                    SELECT oe.id FROM order_events oe
-                    WHERE (
-                        SELECT COUNT(*) FROM order_events oe2
-                        WHERE oe2.status = oe.status
-                          AND date_trunc('second', oe2.event_ts) = date_trunc('second', oe.event_ts)
-                    ) >= 10
-                )
-            """)
-            deleted = cur.rowcount
-        conn.commit()
-    return deleted
 
 
 
