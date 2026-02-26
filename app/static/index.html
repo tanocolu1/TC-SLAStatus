@@ -1190,6 +1190,11 @@
         }
       }
 
+      // Listado de pedidos — cada ciclo en modo normal
+      if (!IS_TV) {
+        await refreshPending();
+      }
+
       // Tops (menos frecuentes)
       if (topsCounter % TOPS_EVERY === 0) {
         await refreshTops();
@@ -1614,7 +1619,7 @@
         startKpiLoop(kpiIntervalMs);
       }
       await refreshTops();
-      await refreshPending();
+      if (!IS_TV) await refreshPending();
       await refreshAlerts();
       if (!IS_TV) { await refreshProductivity(); await refreshStageTimes(); await refreshAllAnalytics(); }
     })();
