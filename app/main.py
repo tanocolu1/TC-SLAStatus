@@ -1,9 +1,15 @@
+import asyncio
+import asyncio
 import logging
 import os
 import json
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # pip install backports.zoneinfo
 from functools import lru_cache
 
 import requests
@@ -27,7 +33,10 @@ BL_TOKEN = os.environ.get("BL_TOKEN", "")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "")
 
 SYNC_WINDOW_DAYS = int(os.environ.get("SYNC_WINDOW_DAYS", "30"))
-MAX_SYNC_LOOPS = int(os.environ.get("MAX_SYNC_LOOPS", "120"))
+TZ_NAME = os.environ.get("TZ_NAME", "America/Argentina/Buenos_Aires")
+LOCAL_TZ = ZoneInfo(TZ_NAME)
+MAX_SYNC_LOOPS  = int(os.environ.get("MAX_SYNC_LOOPS", "120"))
+AUTO_SYNC_EVERY = int(os.environ.get("AUTO_SYNC_EVERY", "300"))  # segundos entre syncs (default 5 min)
 
 if not SYNC_SECRET:
     logger.warning("SYNC_SECRET no está configurado — el endpoint /sync es público.")
@@ -113,7 +122,33 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:
         logger.error("Error al inicializar el schema: %s", exc)
         raise
+
+    task = asyncio.create_task(_auto_sync_loop())
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _auto_sync_loop() -> None:
+    """Llama a _run_sync() cada AUTO_SYNC_EVERY segundos en background."""
+    logger.info("Auto-sync arrancado: cada %d segundos.", AUTO_SYNC_EVERY)
+    # Primer sync inmediato al arrancar
+    try:
+        result = await asyncio.to_thread(_run_sync)
+        logger.info("Auto-sync inicial OK: %s", result)
+    except Exception as exc:
+        logger.error("Auto-sync inicial falló: %s", exc)
+    while True:
+        await asyncio.sleep(AUTO_SYNC_EVERY)
+        try:
+            result = await asyncio.to_thread(_run_sync)
+            logger.info("Auto-sync OK: %s", result)
+        except Exception as exc:
+            logger.error("Auto-sync falló: %s", exc)
+
 
 
 def _ensure_schema() -> None:
@@ -202,12 +237,8 @@ def bl_call(method: str, params: dict) -> dict:
 # ===============================
 # SYNC (paginado 100/batch) + SNAPSHOT
 # ===============================
-@app.post("/sync")
-def sync(request: Request):
-    if SYNC_SECRET:
-        if request.headers.get("X-Sync-Secret") != SYNC_SECRET:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
+def _run_sync() -> dict:
+    """Lógica de sync pura, sin HTTP context. Usada por el background loop y el endpoint manual."""
     # 1) status_id -> name
     status_list = bl_call("getOrderStatusList", {}).get("statuses", [])
     id_to_name: dict[int, str] = {}
@@ -452,6 +483,15 @@ def sync(request: Request):
         "window_days":     SYNC_WINDOW_DAYS,
         "loops":           loops,
     }
+
+
+@app.post("/sync")
+def sync(request: Request):
+    """Endpoint manual — útil para forzar un sync desde fuera o para crons externos."""
+    if SYNC_SECRET:
+        if request.headers.get("X-Sync-Secret") != SYNC_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    return _run_sync()
 
 
 # ===============================
