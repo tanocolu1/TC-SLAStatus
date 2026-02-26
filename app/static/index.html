@@ -57,6 +57,8 @@
       border-radius: 999px;
       background: rgba(255,255,255,.03);
     }
+    /* FIX: indicador visual de último refresco */
+    .pill.stale{ border-color: rgba(214,69,69,.45); color: #ffb3b3; }
 
     .grid-kpi{
       display:grid;
@@ -154,13 +156,25 @@
       font-size: 12px;
       color: #c7d2fe;
     }
-    .name{
-      font-weight: 650;
-    }
+    .name{ font-weight: 650; }
     .empty{
       padding: 14px 10px;
       color: var(--muted);
       border-top: 1px solid var(--line);
+    }
+
+    /* FIX: barra de progreso del countdown */
+    .refresh-bar-wrap{
+      height: 2px;
+      background: rgba(255,255,255,.06);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .refresh-bar{
+      height: 100%;
+      background: rgba(38,166,154,.6);
+      transition: width .9s linear;
     }
 
     @media (max-width: 1200px){
@@ -174,9 +188,15 @@
     <div class="topbar">
       <div class="title">Depósito · Dashboard</div>
       <div class="meta">
-        <div class="pill">Auto-refresh <span id="refreshSec">10</span>s</div>
-        <div class="pill">Servidor <span id="serverTime">—</span></div>
+        <!-- FIX: muestra countdown en lugar del intervalo fijo -->
+        <div class="pill" id="pillCountdown">Próximo refresh en <span id="refreshCountdown">—</span>s</div>
+        <div class="pill" id="pillServer">Servidor <span id="serverTime">—</span></div>
       </div>
+    </div>
+
+    <!-- FIX: barra visual de progreso del countdown -->
+    <div class="refresh-bar-wrap">
+      <div class="refresh-bar" id="refreshBar" style="width:100%"></div>
     </div>
 
     <div class="grid-kpi">
@@ -185,7 +205,7 @@
           <div>En preparación</div>
           <div class="badge" id="badgePrep">—</div>
         </div>
-        <div class="kpi-value" id="kpiPrep">0</div>
+        <div class="kpi-value" id="kpiPrep">—</div>
         <div class="kpi-sub muted">Nuevos + Recepción + Preparación</div>
       </div>
 
@@ -194,8 +214,8 @@
           <div>Embalados</div>
           <div class="badge" id="badgePack">—</div>
         </div>
-        <div class="kpi-value" id="kpiPack">0</div>
-        <div class="kpi-sub muted">Puestos + “Embalado”</div>
+        <div class="kpi-value" id="kpiPack">—</div>
+        <div class="kpi-sub muted">Puestos + "Embalado"</div>
       </div>
 
       <div class="card">
@@ -203,7 +223,7 @@
           <div>En despacho</div>
           <div class="badge" id="badgeShip">—</div>
         </div>
-        <div class="kpi-value" id="kpiShip">0</div>
+        <div class="kpi-value" id="kpiShip">—</div>
         <div class="kpi-sub muted">Transportes / Pickup</div>
       </div>
 
@@ -212,8 +232,8 @@
           <div>Despachados hoy</div>
           <div class="badge good">Enviado</div>
         </div>
-        <div class="kpi-value" id="kpiShippedToday">0</div>
-        <div class="kpi-sub muted">Eventos “Enviado” hoy</div>
+        <div class="kpi-value" id="kpiShippedToday">—</div>
+        <div class="kpi-sub muted">Pedidos únicos "Enviado" hoy</div>
       </div>
 
       <div class="card">
@@ -221,8 +241,8 @@
           <div>Atrasados +24h</div>
           <div class="badge" id="badgeLate">—</div>
         </div>
-        <div class="kpi-value" id="kpiLate">0</div>
-        <div class="kpi-sub muted">Edad promedio: <span id="kpiAvg">0</span> min</div>
+        <div class="kpi-value" id="kpiLate">—</div>
+        <div class="kpi-sub muted">Edad promedio: <span id="kpiAvg">—</span> min</div>
       </div>
     </div>
 
@@ -232,7 +252,7 @@
           <div>Top 10 artículos vendidos <span>(últimos 7 días)</span></div>
           <span class="muted" id="topProductsMeta">—</span>
         </div>
-        <div id="topProductsWrap"></div>
+        <div id="topProductsWrap"><div class="empty">Cargando…</div></div>
       </div>
 
       <div class="card">
@@ -240,49 +260,66 @@
           <div>Top 6 embaladores <span>(hoy)</span></div>
           <span class="muted" id="topPackersMeta">—</span>
         </div>
-        <div id="topPackersWrap"></div>
+        <div id="topPackersWrap"><div class="empty">Cargando…</div></div>
       </div>
     </div>
   </div>
 
   <script>
+    // ─── Utilidades ────────────────────────────────────────────────────────────
+
     const $ = (id) => document.getElementById(id);
 
-    function badgeForLate(n){
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&",  "&amp;")
+        .replaceAll("<",  "&lt;")
+        .replaceAll(">",  "&gt;")
+        .replaceAll('"',  "&quot;")
+        .replaceAll("'",  "&#039;");
+    }
+
+    function fmtTime(iso) {
+      try {
+        return new Date(iso).toLocaleString("es-AR", { hour12: false });
+      } catch (_) {
+        return iso || "—";
+      }
+    }
+
+    function badgeForLate(n) {
       if (n <= 0) return { cls: "good", text: "OK" };
       if (n <= 5) return { cls: "warn", text: "Atención" };
       return { cls: "bad", text: "Crítico" };
     }
 
-    function setBadge(el, cls, text){
+    function setBadge(el, cls, text) {
       el.className = "badge " + (cls || "");
       el.textContent = text;
     }
 
-    function fmtTime(iso){
-      try{
-        const d = new Date(iso);
-        return d.toLocaleString("es-AR", { hour12:false });
-      }catch(e){
-        return iso || "—";
-      }
+    async function fetchJson(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`${url} → ${res.status}`);
+      return res.json();
     }
 
-    function renderTopProducts(items){
-      if (!items || items.length === 0){
+    // ─── Renderers ─────────────────────────────────────────────────────────────
+
+    function renderTopProducts(items) {
+      if (!items || items.length === 0) {
         return `<div class="empty">Sin datos todavía (corré /sync o esperá el cron).</div>`;
       }
       const rows = items.map((it, idx) => `
         <tr>
-          <td class="row-rank">${idx+1}</td>
+          <td class="row-rank">${idx + 1}</td>
           <td>
             <div class="name">${escapeHtml(it.name || "")}</div>
             <div class="sku">${escapeHtml(it.sku || "")}</div>
           </td>
-          <td class="num">${Number(it.units || 0).toLocaleString("es-AR")}</td>
+          <td class="num">${Number(it.units  || 0).toLocaleString("es-AR")}</td>
           <td class="num muted">${Number(it.orders || 0).toLocaleString("es-AR")}</td>
-        </tr>
-      `).join("");
+        </tr>`).join("");
 
       return `
         <table>
@@ -295,21 +332,19 @@
             </tr>
           </thead>
           <tbody>${rows}</tbody>
-        </table>
-      `;
+        </table>`;
     }
 
-    function renderTopPackers(items){
-      if (!items || items.length === 0){
+    function renderTopPackers(items) {
+      if (!items || items.length === 0) {
         return `<div class="empty">Sin datos todavía (no hubo movimientos a Puestos o faltan eventos).</div>`;
       }
       const rows = items.map((it, idx) => `
         <tr>
-          <td class="row-rank">${idx+1}</td>
+          <td class="row-rank">${idx + 1}</td>
           <td class="name">${escapeHtml(it.packer || "")}</td>
           <td class="num">${Number(it.orders_packed || 0).toLocaleString("es-AR")}</td>
-        </tr>
-      `).join("");
+        </tr>`).join("");
 
       return `
         <table>
@@ -321,97 +356,141 @@
             </tr>
           </thead>
           <tbody>${rows}</tbody>
-        </table>
-      `;
+        </table>`;
     }
 
-    function escapeHtml(s){
-      return String(s)
-        .replaceAll("&","&amp;")
-        .replaceAll("<","&lt;")
-        .replaceAll(">","&gt;")
-        .replaceAll('"',"&quot;")
-        .replaceAll("'","&#039;");
+    // ─── Lógica de refresco ────────────────────────────────────────────────────
+    //
+    // FIX: antes había DOS setInterval paralelos que llamaban a /api/metrics,
+    // uno cada 60 s (refreshAll completo) y otro cada 10 s solo para KPIs,
+    // duplicando código y peticiones.
+    // Ahora hay UN solo ciclo: KPIs cada `kpiIntervalMs`, tops cada vez que
+    // se acumulan `TOPS_EVERY` ciclos de KPI.
+    //
+    // FIX: el intervalo de KPI ahora viene del servidor (refresh_seconds),
+    // no está hardcodeado en 10 s.
+
+    const TOPS_EVERY = 6;   // tops se recargan cada 6 × kpiInterval
+    let kpiIntervalMs = 10_000;
+    let kpiTimer      = null;
+    let topsCounter   = 0;
+    let lastSuccess   = null;  // timestamp del último fetch exitoso
+
+    function startKpiLoop(intervalMs) {
+      if (kpiTimer) clearInterval(kpiTimer);
+      kpiIntervalMs = intervalMs;
+      startCountdown(intervalMs);
+      kpiTimer = setInterval(tick, intervalMs);
     }
 
-    async function fetchJson(url){
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-      return await res.json();
+    // ── Countdown visual ───────────────────────────────────────────────────────
+    let countdownEnd = 0;
+    let countdownTimer = null;
+
+    function startCountdown(intervalMs) {
+      countdownEnd = Date.now() + intervalMs;
+      if (countdownTimer) clearInterval(countdownTimer);
+      countdownTimer = setInterval(() => {
+        const rem = Math.max(0, Math.ceil((countdownEnd - Date.now()) / 1000));
+        $("refreshCountdown").textContent = rem;
+        const pct = ((countdownEnd - Date.now()) / kpiIntervalMs) * 100;
+        $("refreshBar").style.width = Math.max(0, Math.min(100, pct)) + "%";
+      }, 500);
     }
 
-    async function refreshAll(){
-      try{
+    // ── Stale indicator: si pasan 3 × intervalo sin respuesta ─────────────────
+    function markStale(isStale) {
+      $("pillServer").classList.toggle("stale", isStale);
+    }
+
+    // ── Actualizar KPIs en el DOM ──────────────────────────────────────────────
+    function applyMetrics(m) {
+      $("serverTime").textContent = fmtTime(m.server_time_utc);
+
+      $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
+      $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
+      $("kpiShip").textContent         = (m.en_despacho      ?? 0).toLocaleString("es-AR");
+      $("kpiShippedToday").textContent = (m.despachados_hoy  ?? 0).toLocaleString("es-AR");
+      $("kpiLate").textContent         = (m.atrasados_24h    ?? 0).toLocaleString("es-AR");
+      $("kpiAvg").textContent          = (m.avg_age_min      ?? 0).toFixed(1);
+
+      setBadge($("badgePrep"), (m.en_preparacion ?? 0) > 0 ? "warn" : "good",
+               (m.en_preparacion ?? 0) > 0 ? "En cola"   : "OK");
+      setBadge($("badgePack"), (m.embalados      ?? 0) > 0 ? "warn" : "good",
+               (m.embalados      ?? 0) > 0 ? "Pendientes" : "OK");
+      setBadge($("badgeShip"), (m.en_despacho    ?? 0) > 0 ? "warn" : "good",
+               (m.en_despacho    ?? 0) > 0 ? "Pendientes" : "OK");
+      const bl = badgeForLate(m.atrasados_24h ?? 0);
+      setBadge($("badgeLate"), bl.cls, bl.text);
+    }
+
+    // ── Tick principal ─────────────────────────────────────────────────────────
+    async function tick() {
+      startCountdown(kpiIntervalMs);
+      topsCounter++;
+
+      // KPIs
+      try {
         const m = await fetchJson("/api/metrics");
-        $("refreshSec").textContent = m.refresh_seconds ?? 10;
-        $("serverTime").textContent = fmtTime(m.server_time_utc);
+        lastSuccess = Date.now();
+        markStale(false);
+        applyMetrics(m);
 
-        $("kpiPrep").textContent = m.en_preparacion ?? 0;
-        $("kpiPack").textContent = m.embalados ?? 0;
-        $("kpiShip").textContent = m.en_despacho ?? 0;
-        $("kpiShippedToday").textContent = m.despachados_hoy ?? 0;
-        $("kpiLate").textContent = m.atrasados_24h ?? 0;
-        $("kpiAvg").textContent = (m.avg_age_min ?? 0).toFixed(1);
-
-        // badges
-        setBadge($("badgePrep"), (m.en_preparacion ?? 0) > 0 ? "warn" : "good", (m.en_preparacion ?? 0) > 0 ? "En cola" : "OK");
-        setBadge($("badgePack"), (m.embalados ?? 0) > 0 ? "warn" : "good", (m.embalados ?? 0) > 0 ? "Pendientes" : "OK");
-        setBadge($("badgeShip"), (m.en_despacho ?? 0) > 0 ? "warn" : "good", (m.en_despacho ?? 0) > 0 ? "Pendientes" : "OK");
-        const bl = badgeForLate(m.atrasados_24h ?? 0);
-        setBadge($("badgeLate"), bl.cls, bl.text);
-
-      }catch(e){
+        // Reajustar intervalo si el servidor lo cambió
+        const serverInterval = (m.refresh_seconds ?? 10) * 1000;
+        if (serverInterval !== kpiIntervalMs) {
+          startKpiLoop(serverInterval);
+          return; // el nuevo loop arrancará con el intervalo correcto
+        }
+      } catch (e) {
         console.error("metrics error", e);
+        // FIX: marcar como stale si llevamos 3 ciclos sin respuesta
+        if (lastSuccess && Date.now() - lastSuccess > kpiIntervalMs * 3) {
+          markStale(true);
+        }
       }
 
-      // tops (independientes)
-      try{
+      // Tops (menos frecuentes)
+      if (topsCounter % TOPS_EVERY === 0) {
+        await refreshTops();
+      }
+    }
+
+    async function refreshTops() {
+      try {
         const tp = await fetchJson("/api/top-products?days=7&limit=10");
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
-        $("topProductsMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", {hour12:false});
-      }catch(e){
+        $("topProductsMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", { hour12: false });
+      } catch (e) {
         console.error("top-products error", e);
         $("topProductsWrap").innerHTML = `<div class="empty">Error cargando top artículos.</div>`;
       }
 
-      try{
+      try {
         const pk = await fetchJson("/api/top-packers?days=1&limit=6");
         $("topPackersWrap").innerHTML = renderTopPackers(pk);
-        $("topPackersMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", {hour12:false});
-      }catch(e){
+        $("topPackersMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", { hour12: false });
+      } catch (e) {
         console.error("top-packers error", e);
         $("topPackersWrap").innerHTML = `<div class="empty">Error cargando top embaladores.</div>`;
       }
     }
 
-    // primer render
-    refreshAll();
-
-    // KPIs cada 10s; tops cada 60s para no gastar
-    setInterval(refreshAll, 60000); // todo cada 60s
-    setInterval(async () => {
-      try{
+    // ── Arranque ───────────────────────────────────────────────────────────────
+    // Primer render inmediato (incluyendo tops), luego arranca el loop
+    (async () => {
+      try {
         const m = await fetchJson("/api/metrics");
-        $("refreshSec").textContent = m.refresh_seconds ?? 10;
-        $("serverTime").textContent = fmtTime(m.server_time_utc);
-
-        $("kpiPrep").textContent = m.en_preparacion ?? 0;
-        $("kpiPack").textContent = m.embalados ?? 0;
-        $("kpiShip").textContent = m.en_despacho ?? 0;
-        $("kpiShippedToday").textContent = m.despachados_hoy ?? 0;
-        $("kpiLate").textContent = m.atrasados_24h ?? 0;
-        $("kpiAvg").textContent = (m.avg_age_min ?? 0).toFixed(1);
-
-        setBadge($("badgePrep"), (m.en_preparacion ?? 0) > 0 ? "warn" : "good", (m.en_preparacion ?? 0) > 0 ? "En cola" : "OK");
-        setBadge($("badgePack"), (m.embalados ?? 0) > 0 ? "warn" : "good", (m.embalados ?? 0) > 0 ? "Pendientes" : "OK");
-        setBadge($("badgeShip"), (m.en_despacho ?? 0) > 0 ? "warn" : "good", (m.en_despacho ?? 0) > 0 ? "Pendientes" : "OK");
-        const bl = badgeForLate(m.atrasados_24h ?? 0);
-        setBadge($("badgeLate"), bl.cls, bl.text);
-
-      }catch(e){
-        console.error("metrics fast error", e);
+        lastSuccess = Date.now();
+        applyMetrics(m);
+        const serverInterval = (m.refresh_seconds ?? 10) * 1000;
+        startKpiLoop(serverInterval);
+      } catch (e) {
+        console.error("init metrics error", e);
+        startKpiLoop(kpiIntervalMs); // arranca igual con default
       }
-    }, 10000);
+      await refreshTops();
+    })();
   </script>
 </body>
 </html>
