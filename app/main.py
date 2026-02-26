@@ -702,13 +702,17 @@ def cleanup_snapshots():
                   en_preparacion, embalados, en_despacho,
                   despachados_hoy, atrasados_24h, avg_age_min
                 ) VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, snapshot_ts
                 """,
                 kpi,
             )
+            inserted = cur.fetchone()
         conn.commit()
 
     return JSONResponse({
         "ok": True,
+        "inserted_id": inserted[0],
+        "inserted_ts": inserted[1].isoformat(),
         "snapshot": {
             "en_preparacion":  int(kpi[0]),
             "embalados":       int(kpi[1]),
