@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Depósito · Live</title>
+  <style>
+    :root{
+      --bg:#0b0f14; --card:#121824; --muted:#7c8aa5; --text:#e7eefc;
+      --ok:#2bd576; --warn:#ffb020; --bad:#ff4d4d;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{padding:28px;height:100vh;display:flex;flex-direction:column;gap:18px}
+    .top{display:flex;justify-content:space-between;align-items:flex-end}
+    .title{font-size:28px;font-weight:800}
+    .meta{color:var(--muted);font-size:14px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;flex:1}
+    .card{
+      background:var(--card);border-radius:18px;padding:20px;display:flex;flex-direction:column;justify-content:space-between;
+      box-shadow:0 10px 30px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.05);min-height:180px
+    }
+    .label{color:var(--muted);font-size:16px;font-weight:700;letter-spacing:.4px}
+    .value{font-size:84px;font-weight:900;line-height:1;margin-top:10px}
+    .sub{color:var(--muted);font-size:14px;margin-top:6px}
+    .wide{grid-column:span 2}
+    .barWrap{margin-top:10px;height:18px;background:rgba(255,255,255,.06);border-radius:999px;overflow:hidden}
+    .bar{height:100%;width:0%;background:rgba(255,255,255,.28)}
+    .badge{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted);font-weight:700;font-size:14px}
+    .dot{width:10px;height:10px;border-radius:50%}
+    .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+    .flashBad{outline:2px solid rgba(255,77,77,.45)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">Depósito · Live</div>
+      <div class="meta" id="meta">—</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div>
+          <div class="label">EN PREPARACIÓN</div>
+          <div class="value" id="prep">0</div>
+          <div class="sub">Nuevos + Recepción + Preparación</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div>
+          <div class="label">EMBALADOS</div>
+          <div class="value" id="pack">0</div>
+          <div class="sub">Puestos + Embalado</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div>
+          <div class="label">EN DESPACHO</div>
+          <div class="value" id="ready">0</div>
+          <div class="sub">Transportista asignado</div>
+        </div>
+      </div>
+
+      <div class="card" id="cardLate">
+        <div>
+          <div class="label">ATRASADOS (+24h)</div>
+          <div class="value" id="late">0</div>
+          <div class="sub">Pendientes con último movimiento viejo</div>
+        </div>
+      </div>
+
+      <div class="card wide">
+        <div>
+          <div class="label">PRESIÓN OPERATIVA (embudo)</div>
+          <div class="sub">Distribución del backlog por etapa</div>
+          <div class="barWrap"><div class="bar" id="barPrep"></div></div>
+          <div class="barWrap" style="margin-top:10px"><div class="bar" id="barPack"></div></div>
+          <div class="barWrap" style="margin-top:10px"><div class="bar" id="barReady"></div></div>
+          <div class="sub" style="margin-top:10px">Prep · Embalado · Despacho</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div>
+          <div class="label">DESPACHADOS HOY</div>
+          <div class="value" id="shipped">0</div>
+          <div class="sub">Pasaron a “Enviado” hoy</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div>
+          <div class="label">EDAD PROMEDIO BACKLOG</div>
+          <div class="value" id="avg">0</div>
+          <div class="sub">Minutos desde el último cambio de estado</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="label">SALUD</div>
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+          <span class="badge"><span class="dot ok"></span> Live</span>
+          <span class="badge" id="bLate"><span class="dot warn"></span> Atrasos</span>
+        </div>
+        <div class="sub" style="margin-top:14px" id="hint">—</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const el = (id)=>document.getElementById(id);
+
+  function setBars(prep, pack, ready){
+    const total = Math.max(prep + pack + ready, 1);
+    el("barPrep").style.width = (prep/total*100).toFixed(1) + "%";
+    el("barPack").style.width = (pack/total*100).toFixed(1) + "%";
+    el("barReady").style.width = (ready/total*100).toFixed(1) + "%";
+  }
+
+  function health(late){
+    const dot = el("bLate").querySelector(".dot");
+    if(late === 0){
+      dot.className = "dot ok";
+      el("hint").textContent = "Backlog bajo control.";
+      el("cardLate").classList.remove("flashBad");
+      return;
+    }
+    if(late <= 5){
+      dot.className = "dot warn";
+      el("hint").textContent = "Atrasos leves. Reforzar salida.";
+      el("cardLate").classList.remove("flashBad");
+      return;
+    }
+    dot.className = "dot bad";
+    el("hint").textContent = "Atrasos altos. Priorizar pedidos más antiguos.";
+    el("cardLate").classList.add("flashBad");
+  }
+
+  async function load(){
+    try{
+      const r = await fetch("/api/metrics", {cache:"no-store"});
+      const d = await r.json();
+
+      el("prep").textContent = d.en_preparacion;
+      el("pack").textContent = d.embalados;
+      el("ready").textContent = d.en_despacho;
+      el("late").textContent = d.atrasados_24h;
+      el("shipped").textContent = d.despachados_hoy;
+      el("avg").textContent = Math.round(d.avg_age_min);
+
+      setBars(d.en_preparacion, d.embalados, d.en_despacho);
+      health(d.atrasados_24h);
+
+      const now = new Date();
+      el("meta").textContent = `Actualizado: ${now.toLocaleTimeString()} · refresh ${d.refresh_seconds}s`;
+    } catch(e){
+      el("meta").textContent = "Error actualizando";
+    }
+  }
+
+  load();
+  setInterval(load, 10000);
+</script>
+</body>
+</html>
