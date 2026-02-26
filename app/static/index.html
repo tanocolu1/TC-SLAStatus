@@ -348,64 +348,91 @@
     .card-wide { grid-column: 1 / -1; }
 
 
-    /* ── Modo TV (?modo=tv) ─────────────────────────────────── */
+    /* ── Modo TV (?modo=tv) — fluido, basado en vw/vh ──────── */
     body.tv-mode {
       overflow: hidden;
       height: 100vh;
     }
     body.tv-mode .wrap {
-      padding: 16px 24px;
+      padding: 1.2vh 1.8vw;
       max-width: 100%;
       height: 100vh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      gap: 0;
     }
-    body.tv-mode .topbar { margin-bottom: 10px; }
-    body.tv-mode .title  { font-size: 26px; }
-    body.tv-mode .meta   { font-size: 14px; }
-    body.tv-mode .pill   { padding: 7px 14px; font-size: 14px; }
-    body.tv-mode #btnSync { display: none; }
-    body.tv-mode .refresh-bar-wrap { margin-bottom: 10px; }
+    body.tv-mode .topbar      { margin-bottom: 0.8vh; flex-shrink: 0; }
+    body.tv-mode .title       { font-size: clamp(16px, 1.8vw, 28px); }
+    body.tv-mode .meta        { font-size: clamp(11px, 1vw, 15px); }
+    body.tv-mode .pill        { padding: 0.4vh 0.8vw; font-size: clamp(11px, 1vw, 15px); }
+    body.tv-mode #btnSync     { display: none; }
+    body.tv-mode .refresh-bar-wrap { margin-bottom: 0.6vh; flex-shrink: 0; }
+
+    body.tv-mode .alert-banner {
+      padding: 1vh 1.5vw;
+      margin-bottom: 0.8vh;
+      flex-shrink: 0;
+      cursor: default;
+      pointer-events: none;
+    }
+    body.tv-mode .alert-icon  { font-size: clamp(18px, 2vw, 32px); }
+    body.tv-mode .alert-title { font-size: clamp(14px, 1.5vw, 22px); }
+    body.tv-mode .alert-sub   { font-size: clamp(11px, 1vw, 16px); margin-top: 0.3vh; }
+    body.tv-mode .alert-expand { display: none; }
+    body.tv-mode .alert-detail { display: none !important; }
 
     body.tv-mode .grid-kpi {
       grid-template-columns: repeat(5, 1fr);
-      gap: 10px;
-      margin: 8px 0 10px;
+      gap: 0.6vw;
+      margin: 0 0 0.8vh;
+      flex-shrink: 0;
     }
-    body.tv-mode .card { padding: 16px 16px 14px; min-height: 100px; }
-    body.tv-mode .kpi-label { font-size: 14px; margin-bottom: 10px; }
-    body.tv-mode .kpi-value { font-size: 52px; }
-    body.tv-mode .kpi-sub   { font-size: 13px; margin-top: 10px; }
-    body.tv-mode .badge     { font-size: 12px; padding: 4px 10px; }
+    body.tv-mode .card {
+      padding: 1vh 1.2vw;
+      min-height: 0;
+    }
+    body.tv-mode .kpi-label   { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.5vh; }
+    body.tv-mode .kpi-value   { font-size: clamp(28px, 4vw, 62px); }
+    body.tv-mode .kpi-sub     { font-size: clamp(10px, 0.9vw, 14px); margin-top: 0.4vh; }
+    body.tv-mode .badge       { font-size: clamp(10px, 0.9vw, 13px); padding: 2px 6px; }
 
-    body.tv-mode .card-flow { margin-bottom: 10px; }
-    body.tv-mode .card-title { font-size: 16px; margin-bottom: 12px; }
-    body.tv-mode .flow-label { font-size: 14px; }
-    body.tv-mode .flow-track { height: 28px; }
-    body.tv-mode .flow-pct   { font-size: 16px; }
-    body.tv-mode .flow-count { font-size: 13px; }
-    body.tv-mode .flow-row   { grid-template-columns: 150px 1fr 64px; }
+    body.tv-mode .card-flow   { margin-bottom: 0.8vh; flex-shrink: 0; }
+    body.tv-mode .card-title  { font-size: clamp(12px, 1.2vw, 17px); margin-bottom: 0.6vh; }
+    body.tv-mode .flow-label  { font-size: clamp(11px, 1vw, 14px); }
+    body.tv-mode .flow-track  { height: clamp(16px, 2vh, 28px); }
+    body.tv-mode .flow-pct    { font-size: clamp(12px, 1.2vw, 17px); }
+    body.tv-mode .flow-count  { font-size: clamp(10px, 0.9vw, 13px); }
+    body.tv-mode .flow-row    { grid-template-columns: 10vw 1fr 4vw; gap: 0.5vw; }
+    body.tv-mode .flow-bars   { gap: 0.5vh; }
 
     body.tv-mode .grid-bottom {
       grid-template-columns: 1fr 1fr;
-      gap: 10px;
+      gap: 0.6vw;
       flex: 1;
+      min-height: 0;
       overflow: hidden;
     }
     body.tv-mode .grid-bottom .card {
       overflow: hidden;
       display: flex;
       flex-direction: column;
+      min-height: 0;
     }
-    body.tv-mode .grid-bottom table { font-size: 15px; }
-    body.tv-mode .grid-bottom th    { font-size: 13px; padding: 8px; }
-    body.tv-mode .grid-bottom td    { padding: 10px 8px; }
-    body.tv-mode .name  { font-size: 15px; }
-    body.tv-mode .sku   { font-size: 13px; }
+    body.tv-mode .grid-bottom .card-title {
+      flex-shrink: 0;
+    }
+    /* Mostrar solo las primeras 5 filas en TV */
+    body.tv-mode .grid-bottom tbody tr:nth-child(n+6) { display: none; }
+    body.tv-mode .grid-bottom table { font-size: clamp(12px, 1.1vw, 16px); }
+    body.tv-mode .grid-bottom th    { font-size: clamp(10px, 0.9vw, 13px); padding: 0.5vh 0.6vw; }
+    body.tv-mode .grid-bottom td    { padding: 0.8vh 0.6vw; }
+    body.tv-mode .name  { font-size: clamp(12px, 1.1vw, 16px); }
+    body.tv-mode .sku   { font-size: clamp(10px, 0.9vw, 13px); }
 
-    /* En TV ocultar el listado de pedidos pendientes */
-    body.tv-mode .card-wide { display: none; }
+    /* Ocultar en TV: listado de pedidos, analytics */
+    body.tv-mode .card-wide    { display: none; }
+    body.tv-mode .grid-analytics { display: none; }
 
     /* Modo TV link */
     .tv-link {
@@ -509,18 +536,7 @@
       .grid-analytics { grid-template-columns: 1fr; }
     }
 
-    /* Alerta en modo TV — más grande, sin expandir */
-    body.tv-mode .alert-banner {
-      padding: 18px 24px;
-      margin-bottom: 14px;
-      cursor: default;
-      pointer-events: none;
-    }
-    body.tv-mode .alert-icon  { font-size: 32px; }
-    body.tv-mode .alert-title { font-size: 22px; }
-    body.tv-mode .alert-sub   { font-size: 15px; margin-top: 4px; }
-    body.tv-mode .alert-expand { display: none; }
-    body.tv-mode .alert-detail { display: none !important; }
+
 
     body.tv-mode .alert-title  { font-size: 18px; }
     body.tv-mode .grid-analytics { display: none; }
