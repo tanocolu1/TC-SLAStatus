@@ -1047,7 +1047,8 @@ def pending_orders(limit: int = 200):
 @app.get("/api/alerts")
 def alerts():
     """Pedidos en preparación hace más de 2hs."""
-    prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"]
+    prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"]
+    # RECEPCION (Agendados, A distribuir) no se alerta por tiempo — son programados
     cutoff_2h = datetime.now(timezone.utc) - timedelta(hours=2)
 
     q = """
