@@ -690,12 +690,12 @@ def force_snapshot():
     return JSONResponse({
         "ok": True,
         "snapshot": {
-            "en_preparacion":  kpi[0],
-            "embalados":       kpi[1],
-            "en_despacho":     kpi[2],
-            "despachados_hoy": kpi[3],
-            "atrasados_24h":   kpi[4],
-            "avg_age_min":     round(kpi[5], 1),
+            "en_preparacion":  int(kpi[0]),
+            "embalados":       int(kpi[1]),
+            "en_despacho":     int(kpi[2]),
+            "despachados_hoy": int(kpi[3]),
+            "atrasados_24h":   int(kpi[4]),
+            "avg_age_min":     round(float(kpi[5]), 1),
             "snapshot_ts":     now.isoformat(),
         }
     })
