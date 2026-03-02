@@ -1194,8 +1194,9 @@ def alerts():
     """Pedidos cuyo cut_time ML ya pasó y siguen en preparación/embalado.
     Fallback a >2hs si no tienen shipment ML."""
     now_utc = datetime.now(timezone.utc)
+    # RECEPCION (Agendados, A distribuir) excluidos — son programados sin etiqueta
     prep_pack_statuses = (STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] +
-                          STATUS_MAP["RECEPCION"] + STATUS_MAP["EMBALADO"])
+                          STATUS_MAP["EMBALADO"])
 
     q = """
     SELECT
