@@ -2122,50 +2122,61 @@ def ml_shipments_summary():
 async def ml_backfill(background_tasks: BackgroundTasks):
     """Backfill ml_order_id desde Baselinker para todos los pedidos sin él."""
     def _run():
-        session = _make_session()
-        page = 1
-        filled = 0
-        errors = 0
-        while True:
+        # Usar misma paginación por cursor de fecha que el sync principal
+        from_ts = 1700000000  # desde Nov 2023
+        filled  = 0
+        loops   = 0
+        max_loops = 200
+
+        while loops < max_loops:
+            loops += 1
             try:
-                params = {
-                    "date_confirmed_from": 1700000000,
-                    "page": page,
-                }
-                resp = session.post(
-                    BL_API_URL,
-                    headers={"X-BLToken": BL_TOKEN},
-                    data={"method": "getOrders", "parameters": json.dumps(params)},
-                    timeout=30,
-                )
-                data = resp.json()
+                data = bl_call("getOrders", {
+                    "date_confirmed_from": from_ts,
+                    "get_unconfirmed_orders": True,
+                })
                 orders = data.get("orders", [])
                 if not orders:
                     break
+
                 rows = []
                 for o in orders:
                     eid = (o.get("extra_field_1") or "").strip()
                     if eid:
                         rows.append((eid, str(o.get("order_id", ""))))
+
                 if rows:
                     with get_conn() as conn:
                         with conn.cursor() as cur:
                             for ml_id, order_id in rows:
                                 cur.execute("""
                                     UPDATE orders_meta SET ml_order_id = %s
-                                    WHERE order_id = %s AND (ml_order_id IS NULL OR ml_order_id = '')
+                                    WHERE order_id = %s
+                                      AND (ml_order_id IS NULL OR ml_order_id = '')
                                 """, (ml_id, order_id))
                         conn.commit()
                     filled += len(rows)
-                page += 1
+
                 if len(orders) < 100:
                     break
-            except Exception as e:
-                logger.error("ML backfill error page %d: %s", page, e)
-                errors += 1
-                if errors > 5:
+
+                # Avanzar cursor igual que el sync principal
+                max_ts = from_ts
+                for o in orders:
+                    for field in ("date_confirmed", "date_add"):
+                        try:
+                            max_ts = max(max_ts, int(o.get(field) or 0))
+                        except Exception:
+                            pass
+                if max_ts <= from_ts:
                     break
-        logger.info("ML backfill completo: %d pedidos actualizados", filled)
+                from_ts = max_ts
+
+            except Exception as e:
+                logger.error("ML backfill error loop %d: %s", loops, e)
+                break
+
+        logger.info("ML backfill completo: %d pedidos actualizados en %d loops", filled, loops)
 
     background_tasks.add_task(_run)
     return {"ok": True, "status": "ML backfill iniciado en background"}
