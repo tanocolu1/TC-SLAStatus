@@ -198,6 +198,7 @@ def _ensure_schema() -> None:
                   date_confirmed    TIMESTAMPTZ NULL,
                   date_add          TIMESTAMPTZ NULL,
                   delivery_postcode TEXT NULL,
+                  delivery_method   TEXT NULL,
                   updated_ts        TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
@@ -261,6 +262,18 @@ def _ensure_schema() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id   ON order_items(order_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_sku        ON order_items(sku);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_ts        ON orders_kpi_snapshot(snapshot_ts);")
+            # Migrar: agregar delivery_method a orders_meta si no existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'orders_meta' AND column_name = 'delivery_method'
+                  ) THEN
+                    ALTER TABLE orders_meta ADD COLUMN delivery_method TEXT NULL;
+                  END IF;
+                END $$;
+            """)
             # Migrar: agregar delivery_postcode a orders_meta si no existe
             cur.execute("""
                 DO $$
@@ -456,12 +469,13 @@ def _run_sync() -> dict:
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
-                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, delivery_postcode, updated_ts)
-                        VALUES (%s, %s, %s, %s, NOW())
+                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, delivery_postcode, delivery_method, updated_ts)
+                        VALUES (%s, %s, %s, %s, %s, NOW())
                         ON CONFLICT(order_id) DO UPDATE
                         SET date_confirmed    = EXCLUDED.date_confirmed,
                             date_add          = EXCLUDED.date_add,
                             delivery_postcode = EXCLUDED.delivery_postcode,
+                            delivery_method   = EXCLUDED.delivery_method,
                             updated_ts        = EXCLUDED.updated_ts
                         """,
                         meta_rows,
@@ -1618,70 +1632,97 @@ def time_to_first_move(days: int = 7):
 # ===============================
 @app.get("/api/cutoffs")
 def cutoffs():
-    """Devuelve los próximos cortes del día para Mercado Envíos y zonas."""
+    """Devuelve los próximos cortes del día con conteo de pedidos pendientes."""
     now_local = datetime.now(LOCAL_TZ)
-    weekday   = str(now_local.isoweekday())  # 1=Lun .. 7=Dom
+    weekday   = str(now_local.isoweekday())
     now_time  = now_local.strftime("%H:%M")
+
+    def mins_until(t: str) -> int:
+        h, m   = map(int, t.split(":"))
+        hn, mn = map(int, now_time.split(":"))
+        return (h * 60 + m) - (hn * 60 + mn)
+
+    def cutoff_status(mins: int) -> str:
+        if mins < 0:    return "passed"
+        if mins <= 30:  return "urgent"
+        if mins <= 60:  return "warning"
+        return "pending"
+
+    # ── Conteos desde DB ──────────────────────────────────────────────────────
+    me_statuses   = ["Mercado Envíos"]
+    flex_statuses = [s for s in STATUS_MAP.get("DESPACHO", []) if s not in me_statuses]
+    active_statuses = (
+        STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"] +
+        STATUS_MAP["PREPARACION"] + STATUS_MAP["EMBALADO"] + STATUS_MAP["DESPACHO"]
+    )
+
+    counts = {"me": 0, "caba": 0, "gba": 0}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Mercado Envíos: todos los pedidos en estado "Mercado Envíos"
+                cur.execute("""
+                    SELECT COUNT(*) FROM orders_current
+                    WHERE status = ANY(%s)
+                """, (me_statuses,))
+                counts["me"] = cur.fetchone()[0]
+
+                # Flex CABA: transportistas flex con CP 1000-1499
+                cur.execute("""
+                    SELECT COUNT(*) FROM orders_current oc
+                    JOIN orders_meta om ON om.order_id = oc.order_id
+                    WHERE oc.status = ANY(%s)
+                      AND om.delivery_postcode ~ '^[0-9]+$'
+                      AND CAST(LEFT(om.delivery_postcode, 4) AS INT)
+                          BETWEEN %s AND %s
+                """, (flex_statuses, 1000, 1499))
+                counts["caba"] = cur.fetchone()[0]
+
+                # Flex GBA: transportistas flex con CP 1500-9999
+                cur.execute("""
+                    SELECT COUNT(*) FROM orders_current oc
+                    JOIN orders_meta om ON om.order_id = oc.order_id
+                    WHERE oc.status = ANY(%s)
+                      AND om.delivery_postcode ~ '^[0-9]+$'
+                      AND CAST(LEFT(om.delivery_postcode, 4) AS INT)
+                          BETWEEN %s AND %s
+                """, (flex_statuses, 1500, 9999))
+                counts["gba"] = cur.fetchone()[0]
+    except Exception as e:
+        logger.error("cutoffs count error: %s", e)
 
     result = {"mercadoenvios": [], "zonas": [], "now": now_local.isoformat()}
 
-    # ── Mercado Envíos: colectas del día ──────────────────────────────────────
+    # ── Mercado Envíos colectas ───────────────────────────────────────────────
     for colecta in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", []):
         horario = colecta.get("horarios", {}).get(weekday)
         if not horario:
             continue
         corte         = horario["corte"]
-        llegada_desde = horario["llegada_desde"]
-        llegada_hasta = horario["llegada_hasta"]
-
-        # Minutos restantes hasta el corte
-        def mins_until(t: str) -> int:
-            h, m = map(int, t.split(":"))
-            hn, mn = map(int, now_time.split(":"))
-            return (h * 60 + m) - (hn * 60 + mn)
-
-        mins_to_corte   = mins_until(corte)
-        mins_to_llegada = mins_until(llegada_desde)
-
-        status = "pending"
-        if mins_to_corte < 0:
-            status = "passed"   # corte ya pasó
-        elif mins_to_corte <= 30:
-            status = "urgent"   # menos de 30 min
-        elif mins_to_corte <= 60:
-            status = "warning"  # menos de 1 hora
-
+        mins_to_corte = mins_until(corte)
         result["mercadoenvios"].append({
             "nombre":        colecta["nombre"],
             "corte":         corte,
-            "llegada_desde": llegada_desde,
-            "llegada_hasta": llegada_hasta,
+            "llegada_desde": horario["llegada_desde"],
+            "llegada_hasta": horario["llegada_hasta"],
             "mins_to_corte": mins_to_corte,
-            "status":        status,
+            "status":        cutoff_status(mins_to_corte),
+            "pending_count": counts["me"],
         })
 
-    # ── Zonas: corte por código postal ────────────────────────────────────────
+    # ── Zonas ─────────────────────────────────────────────────────────────────
     for zona, cfg in CUTOFF_CONFIG.get("zonas", {}).items():
-        corte = cfg["corte"]
-        h, m  = map(int, corte.split(":"))
-        hn, mn = map(int, now_time.split(":"))
-        mins_to_corte = (h * 60 + m) - (hn * 60 + mn)
-
-        status = "pending"
-        if mins_to_corte < 0:
-            status = "passed"
-        elif mins_to_corte <= 30:
-            status = "urgent"
-        elif mins_to_corte <= 60:
-            status = "warning"
-
+        corte         = cfg["corte"]
+        mins_to_corte = mins_until(corte)
+        zona_key      = "caba" if zona.upper() == "CABA" else "gba"
         result["zonas"].append({
             "zona":          zona,
             "corte":         corte,
             "cp_desde":      cfg.get("codigo_postal_desde"),
             "cp_hasta":      cfg.get("codigo_postal_hasta"),
             "mins_to_corte": mins_to_corte,
-            "status":        status,
+            "status":        cutoff_status(mins_to_corte),
+            "pending_count": counts[zona_key],
         })
 
     return JSONResponse(result)

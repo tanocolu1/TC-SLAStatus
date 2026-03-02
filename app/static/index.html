@@ -670,6 +670,19 @@
     body.tv-mode .grid-analytics-3 { display: none; }
 
 
+
+    .cutoff-time-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .cutoff-count {
+      font-size: 12px; font-weight: 700;
+      padding: 2px 8px; border-radius: 8px;
+    }
+    .cutoff-count.urgent  { background: rgba(214,69,69,.2);  color: #ffb3b3; }
+    .cutoff-count.warning { background: rgba(224,168,0,.2);  color: #ffe8a3; }
+    .cutoff-count.pending { background: rgba(88,166,255,.15); color: #58a6ff; }
+    .cutoff-count.passed  { background: rgba(255,255,255,.06); color: var(--muted); }
+    .cutoff-count.neutral { background: rgba(255,255,255,.04); color: var(--muted); font-weight: 400; }
+    body.tv-mode .cutoff-count { font-size: clamp(9px, 0.85vw, 13px); padding: 1px 5px; }
+    body.tv-mode .cutoff-time-row { gap: 4px; }
     /* ── Horarios de corte ───────────────────────────────────── */
     .cutoffs-wrap {
       display: flex;
@@ -1373,10 +1386,16 @@
       const countdown = item.status === 'passed'
         ? 'Ya pasó'
         : fmtMinsToCorte(item.mins_to_corte);
+      const countBadge = item.pending_count > 0
+        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pedidos</span>`
+        : `<span class="cutoff-count neutral">Sin pedidos</span>`;
 
       return `<div class="cutoff-card ${item.status}">
         <div class="cutoff-name">${escapeHtml(name)}</div>
-        <div class="cutoff-time">⏱ ${item.corte}</div>
+        <div class="cutoff-time-row">
+          <span class="cutoff-time">⏱ ${item.corte}</span>
+          ${countBadge}
+        </div>
         <div class="cutoff-detail">${detail}</div>
         <div class="cutoff-countdown">${countdown}</div>
       </div>`;
