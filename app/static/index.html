@@ -422,7 +422,7 @@
 
     /* Main — columna izquierda fila 3: KPIs + flujo + tops */
     body.tv-mode .grid-kpi {
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 0.5vw;
       margin: 0;
       min-width: 0;
@@ -434,7 +434,7 @@
     }
     body.tv-mode .card           { padding: 0.8vh 1vw; min-height: 0; }
     body.tv-mode .kpi-label      { font-size: clamp(10px, 0.85vw, 13px); margin-bottom: 0.3vh; }
-    body.tv-mode .kpi-value      { font-size: clamp(28px, 4vw, 64px); }
+    body.tv-mode .kpi-value      { font-size: clamp(32px, 4.8vw, 72px); }
     body.tv-mode .kpi-sub        { font-size: clamp(9px, 0.75vw, 12px); margin-top: 0.3vh; }
     body.tv-mode .badge          { font-size: clamp(9px, 0.75vw, 12px); padding: 2px 5px; }
     body.tv-mode .card           { padding: 0.7vh 0.8vw; }
@@ -1297,7 +1297,6 @@
 
       $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
       $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
-      $("kpiShip").textContent         = (m.esperando_retiro ?? m.en_despacho ?? 0).toLocaleString("es-AR");
       $("kpiShippedToday").textContent = (m.despachados_hoy  ?? 0).toLocaleString("es-AR");
       $("kpiLate").textContent         = (m.atrasados_24h    ?? 0).toLocaleString("es-AR");
       $("kpiAvg").textContent          = (m.avg_age_min      ?? 0).toFixed(1);
@@ -1306,9 +1305,6 @@
                (m.en_preparacion ?? 0) > 0 ? "En cola"   : "OK");
       setBadge($("badgePack"), (m.embalados      ?? 0) > 0 ? "warn" : "good",
                (m.embalados      ?? 0) > 0 ? "Pendientes" : "OK");
-      const shipVal = m.esperando_retiro ?? m.en_despacho ?? 0;
-      setBadge($("badgeShip"), shipVal > 0 ? "warn" : "good",
-               shipVal > 0 ? "Pendientes" : "OK");
       const bl = badgeForLate(m.atrasados_24h ?? 0);
       setBadge($("badgeLate"), bl.cls, bl.text);
       updateFlowChart(m);
@@ -1403,7 +1399,7 @@
         ? 'Ya pasó'
         : fmtMinsToCorte(item.mins_to_corte);
       const countBadge = item.pending_count > 0
-        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pedidos</span>`
+        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pdos</span>`
         : `<span class="cutoff-count neutral">—</span>`;
 
       return `<div class="cutoff-card ${item.status}">

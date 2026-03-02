@@ -665,13 +665,7 @@ def _run_sync() -> dict:
          AVG(EXTRACT(EPOCH FROM (NOW() - COALESCE(oc2.status_since, oc2.updated_ts))) / 60.0), 0)
        FROM orders_current oc2
        WHERE oc2.status = ANY(%(prep_all)s)
-         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min,
-      -- Esperando retiro: en despacho con shipment ML ready_to_ship
-      (SELECT COUNT(*) FROM orders_current oc
-       JOIN orders_meta om ON om.order_id = oc.order_id
-       JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
-       WHERE oc.status = ANY(%(desp)s)
-         AND ms.status = 'ready_to_ship')                              AS esperando_retiro
+         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min
     """
 
     kpi_params = {
@@ -697,9 +691,8 @@ def _run_sync() -> dict:
                 cur.execute("""
                     INSERT INTO orders_kpi_snapshot(
                       snapshot_ts, en_preparacion, embalados, en_despacho,
-                      despachados_hoy, atrasados_24h, avg_age_min,
-                      esperando_retiro
-                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
+                      despachados_hoy, atrasados_24h, avg_age_min
+                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s)
                     """,
                     kpi,
                 )
@@ -1033,7 +1026,6 @@ def metrics():
         "avg_age_min":      float(row[5] or 0.0),
         "refresh_seconds":  REFRESH_SECONDS,
         "server_time_utc":  row[6].isoformat(),
-        "esperando_retiro": int(row[7] or 0) if len(row) > 7 else 0,
     })
 
 
