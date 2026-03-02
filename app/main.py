@@ -1016,20 +1016,62 @@ def cleanup_snapshots():
 # METRICS
 # ===============================
 @app.get("/api/metrics")
-def metrics():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT en_preparacion, embalados, en_despacho,
-                       despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts,
-                       COALESCE(esperando_retiro, 0), COALESCE(retirados_hoy, 0)
-                FROM orders_kpi_snapshot
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            )
-            row = cur.fetchone()
+def metrics(account: str | None = None):
+    if not account or account == "all":
+        # Use snapshot for full view (fast)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT en_preparacion, embalados, en_despacho,
+                           despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts,
+                           COALESCE(esperando_retiro, 0), COALESCE(retirados_hoy, 0)
+                    FROM orders_kpi_snapshot ORDER BY id DESC LIMIT 1
+                """)
+                row = cur.fetchone()
+    else:
+        # Live query filtered by account
+        now_local   = datetime.now(LOCAL_TZ)
+        today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                      (SELECT COUNT(*) FROM orders_current oc
+                       JOIN orders_meta om ON om.order_id = oc.order_id
+                       WHERE oc.status = ANY(%s) AND oc.status <> ALL(%s)
+                         AND om.ml_account_id = %s)                        AS en_preparacion,
+                      (SELECT COUNT(*) FROM orders_current oc
+                       JOIN orders_meta om ON om.order_id = oc.order_id
+                       WHERE oc.status = ANY(%s) AND oc.status <> ALL(%s)
+                         AND om.ml_account_id = %s)                        AS embalados,
+                      (SELECT COUNT(*) FROM orders_current oc
+                       JOIN orders_meta om ON om.order_id = oc.order_id
+                       WHERE oc.status = ANY(%s) AND oc.status <> ALL(%s)
+                         AND om.ml_account_id = %s)                        AS en_despacho,
+                      (SELECT COUNT(DISTINCT oe.order_id) FROM order_events oe
+                       JOIN orders_meta om ON om.order_id = oe.order_id
+                       WHERE oe.status = ANY(%s) AND oe.status <> ALL(%s)
+                         AND oe.event_ts >= %s AND om.ml_account_id = %s)  AS despachados_hoy,
+                      (SELECT COUNT(*) FROM orders_current oc
+                       JOIN orders_meta om ON om.order_id = oc.order_id
+                       JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
+                       WHERE oc.status = ANY(%s) AND oc.status <> ALL(%s)
+                         AND ms.cut_time < NOW()
+                         AND ms.status NOT IN ('cancelled','delivered','not_delivered')
+                         AND om.ml_account_id = %s)                        AS atrasados,
+                      0::float                                             AS avg_age_min,
+                      NOW()                                                AS snapshot_ts,
+                      0, 0
+                """, (
+                    STATUS_MAP["NUEVOS"]+STATUS_MAP["RECEPCION"]+STATUS_MAP["PREPARACION"],
+                    EXCLUDED_STATUSES or ["__never__"], account,
+                    STATUS_MAP["EMBALADO"], EXCLUDED_STATUSES or ["__never__"], account,
+                    STATUS_MAP["DESPACHO"], EXCLUDED_STATUSES or ["__never__"], account,
+                    STATUS_MAP["ENVIADO"], EXCLUDED_STATUSES or ["__never__"], today_start, account,
+                    STATUS_MAP["PREPARACION"]+STATUS_MAP["NUEVOS"]+STATUS_MAP["EMBALADO"],
+                    EXCLUDED_STATUSES or ["__never__"], account,
+                ))
+                row = cur.fetchone()
 
     now = datetime.now(timezone.utc)
     if not row:
@@ -1056,10 +1098,10 @@ def metrics():
 # TOP PRODUCTS
 # ===============================
 @app.get("/api/top-products")
-def top_products(days: int = 30, limit: int = 10):
+def top_products(days: int = 30, limit: int = 10, account: str | None = None):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-
-    q = """
+    account_clause = "AND om.ml_account_id = %s" if (account and account != "all") else ""
+    q = f"""
     SELECT
       COALESCE(NULLIF(oi.sku,  ''), '(sin sku)')    AS sku,
       COALESCE(NULLIF(oi.name, ''), '(sin nombre)') AS name,
@@ -1070,14 +1112,18 @@ def top_products(days: int = 30, limit: int = 10):
     JOIN orders_current oc ON oc.order_id = oi.order_id
     WHERE COALESCE(om.date_confirmed, om.date_add, NOW()) >= %s
       AND oc.status <> ALL(%s)
+      {account_clause}
     GROUP BY 1, 2
     ORDER BY units DESC
     LIMIT %s;
     """
-
+    params = [since, EXCLUDED_STATUSES or ["__never__"]]
+    if account and account != "all":
+        params.append(account)
+    params.append(limit)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (since, EXCLUDED_STATUSES or ["__never__"], limit))
+            cur.execute(q, params)
             rows = cur.fetchall()
 
     return [{"sku": r[0], "name": r[1], "units": r[2], "orders": r[3]} for r in rows]
@@ -1213,7 +1259,7 @@ def _get_zone_cutoff_mins(postcode: str | None) -> int | None:
 
 
 @app.get("/api/alerts")
-def alerts():
+def alerts(account: str | None = None):
     """Pedidos cuyo cut_time ML ya pasó y siguen en preparación/embalado.
     Fallback a >2hs si no tienen shipment ML."""
     now_utc = datetime.now(timezone.utc)
@@ -1246,21 +1292,25 @@ def alerts():
     WHERE oc.status = ANY(%s)
       AND oc.status <> ALL(%s)
       AND (
-        -- Tiene cut_time ML ya vencido
         (ms.cut_time IS NOT NULL AND ms.cut_time < NOW())
         OR
-        -- No tiene shipment ML y lleva más de 2hs
         (ms.cut_time IS NULL AND COALESCE(oc.status_since, oc.updated_ts) < %s)
       )
+      {account_filter}
     GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts,
              om.delivery_postcode, ms.cut_time, ms.logistic_type
     ORDER BY COALESCE(ms.cut_time, COALESCE(oc.status_since, oc.updated_ts)) ASC
     LIMIT 100
     """
     cutoff_2h = now_utc - timedelta(hours=2)
+    account_clause = "AND om.ml_account_id = %s" if (account and account != "all") else ""
+    q = q.format(account_filter=account_clause)
+    params = [prep_pack_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h]
+    if account and account != "all":
+        params.append(account)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (prep_pack_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h))
+            cur.execute(q, params)
             rows = cur.fetchall()
 
     orders = []
@@ -1772,7 +1822,7 @@ def time_to_first_move(days: int = 7):
 # HORARIOS DE CORTE
 # ===============================
 @app.get("/api/cutoffs")
-def cutoffs():
+def cutoffs(account: str | None = None):
     """Devuelve los próximos cortes del día con conteo de pedidos pendientes."""
     now_local = datetime.now(LOCAL_TZ)
     weekday   = str(now_local.isoweekday())
@@ -1975,6 +2025,20 @@ def cutoffs():
 
     return JSONResponse(result)
 
+
+
+# ===============================
+# ACCOUNT FILTER HELPER
+# ===============================
+def _account_filter_sql(account: str | None) -> tuple[str, list]:
+    """Returns (WHERE clause snippet, params) to filter by ML account."""
+    if not account or account == "all":
+        return "", []
+    return "AND om.ml_account_id = %s", [account]
+
+def _account_join(alias: str = "oc") -> str:
+    """Returns JOIN clause to orders_meta for account filtering."""
+    return f"LEFT JOIN orders_meta om ON om.order_id = {alias}.order_id"
 
 # ===============================
 # MERCADO LIBRE — OAuth + Sync
