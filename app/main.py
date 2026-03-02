@@ -671,11 +671,7 @@ def _run_sync() -> dict:
        JOIN orders_meta om ON om.order_id = oc.order_id
        JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
        WHERE oc.status = ANY(%(desp)s)
-         AND ms.status = 'ready_to_ship')                              AS esperando_retiro,
-      -- Retirados hoy: shipments que pasaron a shipped hoy
-      (SELECT COUNT(*) FROM ml_shipments
-       WHERE status = 'shipped'
-         AND last_updated::timestamptz >= %(today_start)s)             AS retirados_hoy
+         AND ms.status = 'ready_to_ship')                              AS esperando_retiro
     """
 
     kpi_params = {
@@ -702,8 +698,8 @@ def _run_sync() -> dict:
                     INSERT INTO orders_kpi_snapshot(
                       snapshot_ts, en_preparacion, embalados, en_despacho,
                       despachados_hoy, atrasados_24h, avg_age_min,
-                      esperando_retiro, retirados_hoy
-                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
+                      esperando_retiro
+                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
                     """,
                     kpi,
                 )
@@ -1038,7 +1034,6 @@ def metrics():
         "refresh_seconds":  REFRESH_SECONDS,
         "server_time_utc":  row[6].isoformat(),
         "esperando_retiro": int(row[7] or 0) if len(row) > 7 else 0,
-        "retirados_hoy":    int(row[8] or 0) if len(row) > 8 else 0,
     })
 
 

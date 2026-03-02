@@ -823,13 +823,13 @@
         <div class="kpi-sub muted">Listos, ML no retiró aún</div>
       </div>
 
-      <div class="card">
+      <div class="card" id="cardProximaColecta">
         <div class="kpi-label">
-          <div>Retirados hoy</div>
-          <div class="badge good">ML</div>
+          <div>Próxima colecta</div>
+          <div class="badge" id="badgeColecta">—</div>
         </div>
-        <div class="kpi-value" id="kpiRetirados">—</div>
-        <div class="kpi-sub muted">Shipments shipped hoy</div>
+        <div class="kpi-value" id="kpiProximaColecta">—</div>
+        <div class="kpi-sub muted" id="kpiProximaColectaSub">—</div>
       </div>
 
       <div class="card">
@@ -1297,7 +1297,6 @@
       $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
       $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
       $("kpiShip").textContent         = (m.esperando_retiro ?? m.en_despacho ?? 0).toLocaleString("es-AR");
-      $("kpiRetirados").textContent    = (m.retirados_hoy    ?? 0).toLocaleString("es-AR");
       $("kpiShippedToday").textContent = (m.despachados_hoy  ?? 0).toLocaleString("es-AR");
       $("kpiLate").textContent         = (m.atrasados_24h    ?? 0).toLocaleString("es-AR");
       $("kpiAvg").textContent          = (m.avg_age_min      ?? 0).toFixed(1);
@@ -1414,6 +1413,42 @@
 
     let cutoffInterval = null;
 
+    function updateProximaColecta(d) {
+      // Buscar la próxima colecta pendiente (ME o zona)
+      const all = [
+        ...(d.mercadoenvios || []).map(c => ({...c, tipo: 'ME', label: c.nombre})),
+        ...(d.zonas || []).map(z => ({...z, tipo: 'Flex', label: z.zona})),
+      ].filter(c => c.status !== 'passed' && c.mins_to_corte >= 0)
+       .sort((a, b) => a.mins_to_corte - b.mins_to_corte);
+
+      const kpi    = $('kpiProximaColecta');
+      const sub    = $('kpiProximaColectaSub');
+      const badge  = $('badgeColecta');
+
+      if (!all.length) {
+        kpi.textContent   = 'Sin cortes';
+        sub.textContent   = 'Todos los cortes de hoy pasaron';
+        setBadge(badge, 'good', 'OK');
+        return;
+      }
+
+      const next = all[0];
+      const h    = Math.floor(next.mins_to_corte / 60);
+      const m    = next.mins_to_corte % 60;
+      const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+
+      kpi.textContent  = timeStr;
+      sub.textContent  = `${next.label} · corte ${next.corte}`;
+
+      if (next.mins_to_corte <= 30) {
+        setBadge(badge, 'bad', '⚡ Urgente');
+      } else if (next.mins_to_corte <= 60) {
+        setBadge(badge, 'warn', '⏰ Pronto');
+      } else {
+        setBadge(badge, 'good', next.tipo);
+      }
+    }
+
     async function refreshCutoffs() {
       try {
         const d = await fetchJson('/api/cutoffs');
@@ -1430,6 +1465,9 @@
         if (d.zonas && d.zonas.length > 0) {
           zonaWrap.innerHTML = d.zonas.map(z => renderCutoffCard(z, 'zona')).join('');
         }
+
+        // Actualizar KPI próxima colecta
+        updateProximaColecta(d);
 
         // Actualizar cada minuto para el countdown
         if (!cutoffInterval) {
