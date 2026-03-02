@@ -35,6 +35,15 @@ ML_AUTH_URL = "https://auth.mercadolibre.com.ar/authorization"
 ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://tc-slastatus-production.up.railway.app/ml/callback")
 
+# Mapeo BL order_source_id -> ML account_id
+# Configurable via BL_ML_ACCOUNT_MAP en Railway como JSON
+BL_ML_ACCOUNT_MAP: dict = json.loads(os.environ.get("BL_ML_ACCOUNT_MAP", json.dumps({
+    "31832": "178957816",
+    "31833": "1611024930",
+    "31834": "159243673",
+    "33503": "3216368955",
+})))
+
 BL_API_URL = os.environ.get("BL_API_URL", "https://api.baselinker.com/connector.php")
 BL_TOKEN = os.environ.get("BL_TOKEN", "")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "")
@@ -307,6 +316,20 @@ def _ensure_schema() -> None:
                   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                     WHERE table_name='orders_kpi_snapshot' AND column_name='retirados_hoy') THEN
                     ALTER TABLE orders_kpi_snapshot ADD COLUMN retirados_hoy INT NOT NULL DEFAULT 0;
+                  END IF;
+                END $$;
+            """)
+            # Migrar: agregar order_source_id y ml_account_id a orders_meta
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders_meta' AND column_name='order_source_id') THEN
+                    ALTER TABLE orders_meta ADD COLUMN order_source_id TEXT NULL;
+                  END IF;
+                  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders_meta' AND column_name='ml_account_id') THEN
+                    ALTER TABLE orders_meta ADD COLUMN ml_account_id TEXT NULL;
                   END IF;
                 END $$;
             """)
@@ -2046,7 +2069,7 @@ def _ml_sync_shipments(account_id: str) -> dict:
     synced = 0
     errors = 0
 
-    # Traer pedidos activos con ml_order_id
+    # Traer pedidos activos con ml_order_id de esta cuenta específica
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -2055,10 +2078,11 @@ def _ml_sync_shipments(account_id: str) -> dict:
                 JOIN orders_current oc ON oc.order_id = om.order_id
                 WHERE om.ml_order_id IS NOT NULL
                   AND om.ml_order_id <> ''
+                  AND (om.ml_account_id = %s OR om.ml_account_id IS NULL)
                   AND oc.status <> ALL(%s)
                 ORDER BY om.updated_ts DESC
                 LIMIT 500
-            """, (["Cancelado", "Full", "Pedidos antiguos", "Entregado"] + EXCLUDED_STATUSES,))
+            """, (account_id, ["Cancelado", "Full", "Pedidos antiguos", "Entregado"] + EXCLUDED_STATUSES,))
             rows = cur.fetchall()
 
     for ml_order_id, order_id in rows:
@@ -2231,12 +2255,17 @@ async def ml_notifications(request: Request):
                 account_id = row[0]
                 token = _ml_get_valid_token(account_id)
                 if token:
-                    # Sync del recurso específico
                     headers = {"Authorization": f"Bearer {token}"}
                     r = requests.get(f"{ML_API_URL}{res_id}", headers=headers, timeout=10)
                     if r.ok:
                         ship = r.json()
                         logger.info("ML notif sync OK: %s", ship.get("id"))
+                        # Actualizar shipment en DB si tiene id
+                        if ship.get("id"):
+                            try:
+                                _ml_sync_shipments(account_id)
+                            except Exception as e:
+                                logger.error("ML notif shipment update error: %s", e)
     except Exception as e:
         logger.error("ML notification error: %s", e)
     return JSONResponse({"status": "ok"})
@@ -2414,6 +2443,33 @@ def debug_ml_shipment_detail(shipment_id: str):
             }
         results[acc["account_id"]] = data.get("error", "unknown")
     return {"error": "not_found_in_any_account", "details": results}
+
+
+@app.post("/api/debug/ml-fix-accounts")
+def ml_fix_accounts():
+    """Actualiza account_id en ml_tokens para que coincida con ml_user_id."""
+    fixes = [
+        ("GASTROHOGAR", "159243673"),
+        ("outlet",      "3216368955"),
+    ]
+    updated = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for old_id, new_id in fixes:
+                cur.execute("""
+                    UPDATE ml_tokens SET account_id = %s, ml_user_id = %s
+                    WHERE account_id = %s
+                """, (new_id, new_id, old_id))
+                if cur.rowcount:
+                    updated.append(f"{old_id} -> {new_id}")
+            # También actualizar ml_account_id en orders_meta
+            for old_id, new_id in fixes:
+                cur.execute("""
+                    UPDATE orders_meta SET ml_account_id = %s
+                    WHERE ml_account_id = %s
+                """, (new_id, old_id))
+        conn.commit()
+    return {"updated": updated}
 
 @app.get("/api/debug/ml")
 def debug_ml():
