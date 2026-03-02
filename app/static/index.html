@@ -410,11 +410,15 @@
       margin: 0;
       flex-wrap: nowrap;
     }
-    body.tv-mode .cutoff-card    { padding: 0.5vh 0.7vw; min-width: 0; flex: none; }
-    body.tv-mode .cutoff-name    { font-size: clamp(9px, 0.8vw, 12px); }
-    body.tv-mode .cutoff-time    { font-size: clamp(16px, 1.8vw, 26px); }
-    body.tv-mode .cutoff-detail  { font-size: clamp(9px, 0.8vw, 11px); }
-    body.tv-mode .cutoff-countdown { font-size: clamp(10px, 1vw, 14px); margin-top: 2px; }
+    body.tv-mode .cutoff-card    { padding: 0.4vh 0.6vw; min-width: 0; flex: none; }
+    body.tv-mode .cutoff-name    { font-size: clamp(9px, 0.75vw, 11px); }
+    body.tv-mode .cutoff-time    { font-size: clamp(18px, 2.2vw, 32px); }
+    body.tv-mode .cutoff-detail  { font-size: clamp(8px, 0.7vw, 10px); }
+    body.tv-mode .cutoff-countdown { font-size: clamp(9px, 0.85vw, 13px); margin-top: 1px; }
+    /* Cortes por zona más compactos — horizontal */
+    body.tv-mode #cutoffsZonas   { flex-direction: row; gap: 0.4vw; }
+    body.tv-mode #cutoffsZonas .cutoff-card { flex: 1; }
+    body.tv-mode #cutoffsZonas .cutoff-time { font-size: clamp(14px, 1.6vw, 22px); }
 
     /* Main — columna izquierda fila 3: KPIs + flujo + tops */
     body.tv-mode .grid-kpi {
@@ -423,10 +427,10 @@
       margin: 0;
     }
     body.tv-mode .card           { padding: 0.8vh 1vw; min-height: 0; }
-    body.tv-mode .kpi-label      { font-size: clamp(10px, 0.9vw, 13px); margin-bottom: 0.3vh; }
-    body.tv-mode .kpi-value      { font-size: clamp(24px, 3.2vw, 52px); }
-    body.tv-mode .kpi-sub        { font-size: clamp(9px, 0.8vw, 12px); margin-top: 0.3vh; }
-    body.tv-mode .badge          { font-size: clamp(9px, 0.8vw, 12px); padding: 2px 5px; }
+    body.tv-mode .kpi-label      { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.4vh; }
+    body.tv-mode .kpi-value      { font-size: clamp(40px, 5.5vw, 82px); }
+    body.tv-mode .kpi-sub        { font-size: clamp(10px, 0.85vw, 13px); margin-top: 0.4vh; }
+    body.tv-mode .badge          { font-size: clamp(10px, 0.85vw, 13px); padding: 3px 7px; }
 
     body.tv-mode .card-flow      { margin: 0; }
     body.tv-mode .card-title     { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.4vh; }
