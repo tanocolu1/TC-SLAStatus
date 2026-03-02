@@ -68,6 +68,11 @@ STATUS_MAP: dict[str, list[str]] = json.loads(
     )
 )
 
+# Horarios de corte — configurable via CUTOFF_CONFIG en Railway
+CUTOFF_CONFIG: dict = json.loads(
+    os.environ.get("CUTOFF_CONFIG", ''' {"mercadoenvios": {"colectas": [{"nombre": "Colecta 1", "horarios": {"1": {"corte": "08:00", "llegada_desde": "11:00", "llegada_hasta": "13:00"}, "2": {"corte": "13:00", "llegada_desde": "16:00", "llegada_hasta": "18:00"}, "3": {"corte": "13:00", "llegada_desde": "16:00", "llegada_hasta": "18:00"}, "4": {"corte": "13:00", "llegada_desde": "16:00", "llegada_hasta": "18:00"}, "5": {"corte": "13:00", "llegada_desde": "16:00", "llegada_hasta": "18:00"}, "6": {"corte": "10:00", "llegada_desde": "11:00", "llegada_hasta": "14:00"}}}, {"nombre": "Colecta 2", "horarios": {"1": {"corte": "09:00", "llegada_desde": "12:00", "llegada_hasta": "14:00"}}}, {"nombre": "Colecta 3", "horarios": {"1": {"corte": "13:00", "llegada_desde": "16:00", "llegada_hasta": "18:00"}}}]}, "zonas": {"CABA": {"codigo_postal_desde": 1000, "codigo_postal_hasta": 1499, "corte": "16:00"}, "GBA": {"codigo_postal_desde": 1500, "codigo_postal_hasta": 9999, "corte": "14:00"}}} ''')
+)
+
 # FIX: derivado de STATUS_MAP para no desincronizarse si se agrega un puesto nuevo
 PACKER_STATUSES: list[str] = [s for s in STATUS_MAP["EMBALADO"] if s.startswith("Puesto")]
 
@@ -189,10 +194,11 @@ def _ensure_schema() -> None:
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS orders_meta (
-                  order_id       TEXT PRIMARY KEY,
-                  date_confirmed TIMESTAMPTZ NULL,
-                  date_add       TIMESTAMPTZ NULL,
-                  updated_ts     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                  order_id          TEXT PRIMARY KEY,
+                  date_confirmed    TIMESTAMPTZ NULL,
+                  date_add          TIMESTAMPTZ NULL,
+                  delivery_postcode TEXT NULL,
+                  updated_ts        TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
             """)
             cur.execute("""
@@ -255,6 +261,19 @@ def _ensure_schema() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_order_id   ON order_items(order_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_order_items_sku        ON order_items(sku);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_kpi_snapshot_ts        ON orders_kpi_snapshot(snapshot_ts);")
+            # Migrar: agregar delivery_postcode a orders_meta si no existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'orders_meta' AND column_name = 'delivery_postcode'
+                  ) THEN
+                    ALTER TABLE orders_meta ADD COLUMN delivery_postcode TEXT NULL;
+                  END IF;
+                END $$;
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_meta_postcode ON orders_meta(delivery_postcode);")
             # Migrar: agregar status_since a orders_current si no existe
             cur.execute("""
                 DO $$
@@ -437,12 +456,13 @@ def _run_sync() -> dict:
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
-                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, updated_ts)
-                        VALUES (%s, %s, %s, NOW())
+                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, delivery_postcode, updated_ts)
+                        VALUES (%s, %s, %s, %s, NOW())
                         ON CONFLICT(order_id) DO UPDATE
-                        SET date_confirmed = EXCLUDED.date_confirmed,
-                            date_add       = EXCLUDED.date_add,
-                            updated_ts     = EXCLUDED.updated_ts
+                        SET date_confirmed    = EXCLUDED.date_confirmed,
+                            date_add          = EXCLUDED.date_add,
+                            delivery_postcode = EXCLUDED.delivery_postcode,
+                            updated_ts        = EXCLUDED.updated_ts
                         """,
                         meta_rows,
                     )
@@ -1057,11 +1077,27 @@ def pending_orders(limit: int = 200):
 # ===============================
 # ALERTAS
 # ===============================
+def _get_zone_cutoff_mins(postcode: str | None) -> int | None:
+    """Devuelve los minutos restantes hasta el corte de zona según el CP. None si no aplica."""
+    if not postcode:
+        return None
+    try:
+        cp = int("".join(filter(str.isdigit, postcode))[:4])
+    except Exception:
+        return None
+    now_local = datetime.now(LOCAL_TZ)
+    for zona, cfg in CUTOFF_CONFIG.get("zonas", {}).items():
+        if cfg.get("codigo_postal_desde", 0) <= cp <= cfg.get("codigo_postal_hasta", 99999):
+            h, m = map(int, cfg["corte"].split(":"))
+            now_mins = now_local.hour * 60 + now_local.minute
+            return (h * 60 + m) - now_mins
+    return None
+
+
 @app.get("/api/alerts")
 def alerts():
-    """Pedidos en preparación hace más de 2hs."""
+    """Pedidos en preparación hace más de 2hs, priorizados por corte de zona."""
     prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"]
-    # RECEPCION (Agendados, A distribuir) no se alerta por tiempo — son programados
     cutoff_2h = datetime.now(timezone.utc) - timedelta(hours=2)
 
     q = """
@@ -1076,34 +1112,58 @@ def alerts():
                 ORDER BY oi.name
             ) FILTER (WHERE oi.order_product_id IS NOT NULL),
             '[]'::json
-        ) AS products
+        ) AS products,
+        om.delivery_postcode
     FROM orders_current oc
     LEFT JOIN order_items oi ON oi.order_id = oc.order_id
+    LEFT JOIN orders_meta om ON om.order_id = oc.order_id
     WHERE oc.status = ANY(%s)
       AND oc.status <> ALL(%s)
       AND COALESCE(oc.status_since, oc.updated_ts) < %s
-    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts
+    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts, om.delivery_postcode
     ORDER BY since ASC
-    LIMIT 50
+    LIMIT 100
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(q, (prep_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h))
             rows = cur.fetchall()
 
-    return JSONResponse({
-        "count": len(rows),
-        "orders": [
-            {
-                "order_id": r[0],
-                "status":   r[1],
-                "since":    r[2].isoformat(),
-                "mins":     round(float(r[3]), 0),
-                "products": r[4],
-            }
-            for r in rows
-        ]
-    })
+    orders = []
+    for r in rows:
+        postcode = r[5]
+        mins_to_zone_cutoff = _get_zone_cutoff_mins(postcode)
+
+        # Urgencia: crítico si queda poco para el corte de zona
+        urgency = "normal"
+        if mins_to_zone_cutoff is not None:
+            if mins_to_zone_cutoff < 0:
+                urgency = "passed_cutoff"
+            elif mins_to_zone_cutoff <= 30:
+                urgency = "critical"
+            elif mins_to_zone_cutoff <= 60:
+                urgency = "warning"
+
+        orders.append({
+            "order_id":           r[0],
+            "status":             r[1],
+            "since":              r[2].isoformat(),
+            "mins":               round(float(r[3]), 0),
+            "products":           r[4],
+            "postcode":           postcode,
+            "mins_to_zone_cutoff": mins_to_zone_cutoff,
+            "urgency":            urgency,
+        })
+
+    # Ordenar: críticos primero, luego por tiempo en estado
+    orders.sort(key=lambda x: (
+        0 if x["urgency"] == "critical" else
+        1 if x["urgency"] == "warning" else
+        2 if x["urgency"] == "passed_cutoff" else 3,
+        x["mins"] * -1
+    ))
+
+    return JSONResponse({"count": len(orders), "orders": orders[:50]})
 
 
 # ===============================
@@ -1551,6 +1611,80 @@ def time_to_first_move(days: int = 7):
         "median_mins": float(r[1]) if r[1] else 0,
         "sample":      r[2] or 0,
     }
+
+
+# ===============================
+# HORARIOS DE CORTE
+# ===============================
+@app.get("/api/cutoffs")
+def cutoffs():
+    """Devuelve los próximos cortes del día para Mercado Envíos y zonas."""
+    now_local = datetime.now(LOCAL_TZ)
+    weekday   = str(now_local.isoweekday())  # 1=Lun .. 7=Dom
+    now_time  = now_local.strftime("%H:%M")
+
+    result = {"mercadoenvios": [], "zonas": [], "now": now_local.isoformat()}
+
+    # ── Mercado Envíos: colectas del día ──────────────────────────────────────
+    for colecta in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", []):
+        horario = colecta.get("horarios", {}).get(weekday)
+        if not horario:
+            continue
+        corte         = horario["corte"]
+        llegada_desde = horario["llegada_desde"]
+        llegada_hasta = horario["llegada_hasta"]
+
+        # Minutos restantes hasta el corte
+        def mins_until(t: str) -> int:
+            h, m = map(int, t.split(":"))
+            hn, mn = map(int, now_time.split(":"))
+            return (h * 60 + m) - (hn * 60 + mn)
+
+        mins_to_corte   = mins_until(corte)
+        mins_to_llegada = mins_until(llegada_desde)
+
+        status = "pending"
+        if mins_to_corte < 0:
+            status = "passed"   # corte ya pasó
+        elif mins_to_corte <= 30:
+            status = "urgent"   # menos de 30 min
+        elif mins_to_corte <= 60:
+            status = "warning"  # menos de 1 hora
+
+        result["mercadoenvios"].append({
+            "nombre":        colecta["nombre"],
+            "corte":         corte,
+            "llegada_desde": llegada_desde,
+            "llegada_hasta": llegada_hasta,
+            "mins_to_corte": mins_to_corte,
+            "status":        status,
+        })
+
+    # ── Zonas: corte por código postal ────────────────────────────────────────
+    for zona, cfg in CUTOFF_CONFIG.get("zonas", {}).items():
+        corte = cfg["corte"]
+        h, m  = map(int, corte.split(":"))
+        hn, mn = map(int, now_time.split(":"))
+        mins_to_corte = (h * 60 + m) - (hn * 60 + mn)
+
+        status = "pending"
+        if mins_to_corte < 0:
+            status = "passed"
+        elif mins_to_corte <= 30:
+            status = "urgent"
+        elif mins_to_corte <= 60:
+            status = "warning"
+
+        result["zonas"].append({
+            "zona":          zona,
+            "corte":         corte,
+            "cp_desde":      cfg.get("codigo_postal_desde"),
+            "cp_hasta":      cfg.get("codigo_postal_hasta"),
+            "mins_to_corte": mins_to_corte,
+            "status":        status,
+        })
+
+    return JSONResponse(result)
 
 # ===============================
 # FRONT

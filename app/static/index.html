@@ -626,6 +626,82 @@
     body.tv-mode .grid-analytics-2,
     body.tv-mode .grid-analytics-3 { display: none; }
 
+
+    /* ── Horarios de corte ───────────────────────────────────── */
+    .cutoffs-wrap {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .cutoff-card {
+      flex: 1;
+      min-width: 160px;
+      background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .cutoff-card.urgent {
+      border-color: rgba(214,69,69,.5);
+      background: linear-gradient(180deg, rgba(214,69,69,.1), rgba(214,69,69,.05));
+    }
+    .cutoff-card.warning {
+      border-color: rgba(224,168,0,.45);
+      background: linear-gradient(180deg, rgba(224,168,0,.08), rgba(224,168,0,.03));
+    }
+    .cutoff-card.passed {
+      opacity: .4;
+    }
+    .cutoff-name {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .cutoff-time {
+      font-size: 26px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.5px;
+    }
+    .cutoff-card.urgent  .cutoff-time { color: #ffb3b3; }
+    .cutoff-card.warning .cutoff-time { color: #ffe8a3; }
+    .cutoff-card.passed  .cutoff-time { color: var(--muted); }
+    .cutoff-detail {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .cutoff-countdown {
+      font-size: 12px;
+      font-weight: 700;
+      margin-top: 6px;
+    }
+    .cutoff-card.urgent  .cutoff-countdown { color: #ffb3b3; }
+    .cutoff-card.warning .cutoff-countdown { color: #ffe8a3; }
+    .cutoff-card.passed  .cutoff-countdown { color: var(--muted); }
+    .cutoff-section-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 6px;
+      margin-top: 2px;
+    }
+    body.tv-mode .cutoffs-wrap { gap: 0.6vw; margin-bottom: 0.8vh; }
+    body.tv-mode .cutoff-card  { padding: 0.8vh 1vw; min-width: 0; }
+    body.tv-mode .cutoff-name  { font-size: clamp(9px, 0.8vw, 12px); }
+    body.tv-mode .cutoff-time  { font-size: clamp(18px, 2.2vw, 32px); }
+    body.tv-mode .cutoff-detail     { font-size: clamp(9px, 0.8vw, 12px); }
+    body.tv-mode .cutoff-countdown  { font-size: clamp(10px, 1vw, 14px); }
+    body.tv-mode .cutoff-section-label { font-size: clamp(9px, 0.8vw, 11px); }
+
   </style>
 </head>
 <body>
@@ -654,6 +730,13 @@
       <div class="alert-expand" id="alertExpand">▼ Ver detalle</div>
     </div>
     <div class="alert-detail" id="alertDetail"></div>
+
+    <div id="cutoffsSection">
+      <div class="cutoff-section-label">Mercado Envíos — Colectas de hoy</div>
+      <div class="cutoffs-wrap" id="cutoffsME"></div>
+      <div class="cutoff-section-label" style="margin-top:8px">Cortes por zona</div>
+      <div class="cutoffs-wrap" id="cutoffsZonas"></div>
+    </div>
 
     <div class="grid-kpi">
       <div class="card">
@@ -1226,6 +1309,60 @@
 
 
 
+
+    // ── Horarios de corte ──────────────────────────────────────────────────────
+    function fmtMinsToCorte(mins) {
+      if (mins < 0) return 'Pasado';
+      if (mins === 0) return '¡Ahora!';
+      if (mins < 60) return 'en ' + mins + ' min';
+      const h = Math.floor(mins / 60), m = mins % 60;
+      return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+    }
+
+    function renderCutoffCard(item, tipo) {
+      const isME = tipo === 'me';
+      const name = isME ? item.nombre : item.zona;
+      const detail = isME
+        ? `Colecta ${item.llegada_desde}–${item.llegada_hasta}`
+        : `CP ${item.cp_desde}–${item.cp_hasta}`;
+      const countdown = item.status === 'passed'
+        ? 'Ya pasó'
+        : fmtMinsToCorte(item.mins_to_corte);
+
+      return `<div class="cutoff-card ${item.status}">
+        <div class="cutoff-name">${escapeHtml(name)}</div>
+        <div class="cutoff-time">⏱ ${item.corte}</div>
+        <div class="cutoff-detail">${detail}</div>
+        <div class="cutoff-countdown">${countdown}</div>
+      </div>`;
+    }
+
+    let cutoffInterval = null;
+
+    async function refreshCutoffs() {
+      try {
+        const d = await fetchJson('/api/cutoffs');
+
+        const meWrap = $('cutoffsME');
+        const zonaWrap = $('cutoffsZonas');
+
+        if (d.mercadoenvios && d.mercadoenvios.length > 0) {
+          meWrap.innerHTML = d.mercadoenvios.map(c => renderCutoffCard(c, 'me')).join('');
+        } else {
+          meWrap.innerHTML = '<div style="color:var(--muted);font-size:13px">Sin colectas hoy</div>';
+        }
+
+        if (d.zonas && d.zonas.length > 0) {
+          zonaWrap.innerHTML = d.zonas.map(z => renderCutoffCard(z, 'zona')).join('');
+        }
+
+        // Actualizar cada minuto para el countdown
+        if (!cutoffInterval) {
+          cutoffInterval = setInterval(refreshCutoffs, 60_000);
+        }
+      } catch(e) { console.error('cutoffs error', e); }
+    }
+
     // ── Alertas ────────────────────────────────────────────────────────────────
     let alertOpen = false;
     let alertData = [];
@@ -1238,6 +1375,14 @@
       exp.textContent = alertOpen ? '▲ Ocultar' : '▼ Ver detalle';
     }
 
+    function urgencyBadge(o) {
+      if (!o.urgency || o.urgency === 'normal') return '';
+      if (o.urgency === 'critical')     return '<span class="badge bad" style="margin-left:4px">⚡ Corte en ' + o.mins_to_zone_cutoff + 'min</span>';
+      if (o.urgency === 'warning')      return '<span class="badge warn" style="margin-left:4px">⏰ Corte en ' + o.mins_to_zone_cutoff + 'min</span>';
+      if (o.urgency === 'passed_cutoff') return '<span class="badge bad" style="margin-left:4px">⛔ Corte pasado</span>';
+      return '';
+    }
+
     function renderAlertDetail(orders) {
       if (!orders || orders.length === 0) {
         $('alertDetail').innerHTML = '';
@@ -1248,16 +1393,17 @@
         const hs = Math.floor(o.mins / 60);
         const ms = Math.round(o.mins % 60);
         const timeStr = hs > 0 ? `${hs}h ${ms}m` : `${ms}m`;
+        const cp = o.postcode ? `<span style="font-size:11px;color:var(--muted)">CP ${escapeHtml(o.postcode)}</span>` : '';
         return `<tr>
-          <td><b>#${escapeHtml(o.order_id)}</b></td>
+          <td><b>#${escapeHtml(o.order_id)}</b> ${cp}</td>
           <td>${escapeHtml(o.status)}</td>
-          <td class="alert-mins">${timeStr}</td>
+          <td class="alert-mins">${timeStr}${urgencyBadge(o)}</td>
           <td style="color:var(--muted);font-size:12px">${escapeHtml(prods)}</td>
         </tr>`;
       }).join('');
       $('alertDetail').innerHTML = `
         <table>
-          <thead><tr><th>Pedido</th><th>Estado</th><th>Tiempo</th><th>Productos</th></tr></thead>
+          <thead><tr><th>Pedido</th><th>Estado</th><th>Tiempo / Zona</th><th>Productos</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>`;
     }
@@ -1268,11 +1414,16 @@
         const banner = $('alertBanner');
         if (data.count > 0) {
           banner.classList.add('visible');
-          $('alertTitle').textContent = `⚠️ ${data.count} pedido${data.count > 1 ? 's' : ''} hace más de 2hs en preparación`;
+          const critical = data.orders.filter(o => o.urgency === 'critical' || o.urgency === 'passed_cutoff');
+          $('alertTitle').textContent = `⚠️ ${data.count} pedido${data.count > 1 ? 's' : ''} hace más de 2hs en preparación` +
+            (critical.length > 0 ? ` — ${critical.length} con corte próximo` : '');
           const oldest = data.orders[0];
           const hs = Math.floor(oldest.mins / 60);
           const ms = Math.round(oldest.mins % 60);
-          $('alertSub').textContent = `El más antiguo: #${oldest.order_id} — ${hs}h ${ms}m en "${oldest.status}"`;
+          const zonaTxt = oldest.mins_to_zone_cutoff != null
+            ? ` · Corte zona: ${oldest.mins_to_zone_cutoff > 0 ? 'en ' + oldest.mins_to_zone_cutoff + 'min' : 'PASADO'}`
+            : '';
+          $('alertSub').textContent = `El más urgente: #${oldest.order_id} — ${hs}h ${ms}m en "${oldest.status}"${zonaTxt}`;
           alertData = data.orders;
           if (alertOpen) renderAlertDetail(alertData);
         } else {
@@ -1618,6 +1769,7 @@
         console.error("init metrics error", e);
         startKpiLoop(kpiIntervalMs);
       }
+      await refreshCutoffs();
       await refreshTops();
       if (!IS_TV) await refreshPending();
       await refreshAlerts();
