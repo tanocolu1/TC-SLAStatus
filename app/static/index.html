@@ -359,7 +359,7 @@
       height: 100vh;
       display: grid;
       grid-template-rows: auto auto 1fr;
-      grid-template-columns: 1fr 28vw;
+      grid-template-columns: minmax(0, 1fr) 26vw;
       grid-template-areas:
         "topbar    topbar"
         "alerts    cutoffs"
@@ -425,6 +425,12 @@
       grid-template-columns: repeat(5, 1fr);
       gap: 0.5vw;
       margin: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    body.tv-mode .tv-main-area {
+      min-width: 0;
+      overflow: hidden;
     }
     body.tv-mode .card           { padding: 0.8vh 1vw; min-height: 0; }
     body.tv-mode .kpi-label      { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.4vh; }
