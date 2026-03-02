@@ -2209,6 +2209,23 @@ def debug_ml_shipments_raw():
         for r in rows
     ]
 
+
+@app.get("/api/debug/ml-shipment-detail/{shipment_id}")
+def debug_ml_shipment_detail(shipment_id: str):
+    """Debug: ver detalle completo de un shipment ML."""
+    accounts = _ml_list_accounts()
+    if not accounts:
+        return {"error": "no_accounts"}
+    token = _ml_get_valid_token(accounts[0]["account_id"])
+    if not token:
+        return {"error": "no_token"}
+    r = requests.get(
+        f"{ML_API_URL}/shipments/{shipment_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10
+    )
+    return r.json()
+
 @app.get("/api/debug/ml")
 def debug_ml():
     """Debug: estado de integración ML."""
