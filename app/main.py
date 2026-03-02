@@ -2212,19 +2212,38 @@ def debug_ml_shipments_raw():
 
 @app.get("/api/debug/ml-shipment-detail/{shipment_id}")
 def debug_ml_shipment_detail(shipment_id: str):
-    """Debug: ver detalle completo de un shipment ML."""
+    """Debug: ver detalle completo de un shipment ML probando todas las cuentas."""
     accounts = _ml_list_accounts()
-    if not accounts:
-        return {"error": "no_accounts"}
-    token = _ml_get_valid_token(accounts[0]["account_id"])
-    if not token:
-        return {"error": "no_token"}
-    r = requests.get(
-        f"{ML_API_URL}/shipments/{shipment_id}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10
-    )
-    return r.json()
+    results = {}
+    for acc in accounts:
+        token = _ml_get_valid_token(acc["account_id"])
+        if not token:
+            continue
+        r = requests.get(
+            f"{ML_API_URL}/shipments/{shipment_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10
+        )
+        data = r.json()
+        if r.ok:
+            # Extraer campos relevantes
+            return {
+                "account": acc["nickname"],
+                "id": data.get("id"),
+                "status": data.get("status"),
+                "logistic_type": data.get("logistic_type"),
+                "cut_time": data.get("cut_time"),
+                "date_created": data.get("date_created"),
+                "last_updated": data.get("last_updated"),
+                "shipping_option": data.get("shipping_option"),
+                "lead_time": data.get("lead_time"),
+                "estimated_handling_limit": data.get("estimated_handling_limit"),
+                "service_id": data.get("service_id"),
+                "receiver_address": data.get("receiver_address", {}).get("zip_code"),
+                "all_keys": list(data.keys()),
+            }
+        results[acc["account_id"]] = data.get("error", "unknown")
+    return {"error": "not_found_in_any_account", "details": results}
 
 @app.get("/api/debug/ml")
 def debug_ml():
