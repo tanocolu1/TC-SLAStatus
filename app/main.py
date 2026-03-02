@@ -1795,45 +1795,60 @@ def cutoffs():
 
     result = {"mercadoenvios": [], "zonas": [], "now": now_local.isoformat()}
 
-    # ── Mercado Envíos colectas ───────────────────────────────────────────────
-    for colecta in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", []):
-        horario = colecta.get("horarios", {}).get(weekday)
-        if not horario:
+    # ── Mercado Envíos colectas — dinámicas desde cut_time de ML ─────────────
+    # Agrupar shipments cross_docking por cut_time único del día y mañana
+    for cut_utc_iso, cnt in sorted(counts.get("cut_groups", {}).items()):
+        try:
+            cut_utc = datetime.fromisoformat(cut_utc_iso)
+            cut_local = cut_utc.astimezone(LOCAL_TZ)
+        except Exception:
             continue
-        corte         = horario["corte"]
-        mins_to_corte = mins_until(corte)
-        # Buscar cuántos shipments ML coinciden con este corte
-        # El cut_time de ML está en UTC, el corte configurado está en hora local
-        corte_h, corte_m = map(int, corte.split(":"))
-        corte_utc_dt = datetime(now_local.year, now_local.month, now_local.day,
-                                corte_h, corte_m, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
-        # Buscar en ventana de ±30 min alrededor del corte configurado
-        colecta_count = 0
-        for cut_iso, cnt in counts.get("cut_groups", {}).items():
-            try:
-                cut_dt = datetime.fromisoformat(cut_iso)
-                diff = abs((cut_dt - corte_utc_dt).total_seconds())
-                if diff <= 1800:  # 30 min de tolerancia
-                    colecta_count += cnt
-            except Exception:
-                pass
-        # Si no hay match por hora, dividir equitativamente entre colectas del día
-        if colecta_count == 0 and counts["me"] > 0:
-            total_colectas_hoy = sum(
-                1 for c in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", [])
-                if c.get("horarios", {}).get(weekday)
-            )
-            colecta_count = counts["me"] // max(total_colectas_hoy, 1)
+
+        # Solo hoy y mañana
+        cut_date = cut_local.date()
+        today_date = now_local.date()
+        if cut_date < today_date or cut_date > today_date + timedelta(days=1):
+            continue
+
+        corte_str     = cut_local.strftime("%H:%M")
+        mins_to_corte = mins_until(corte_str)
+
+        # Etiqueta del día
+        if cut_date == today_date:
+            dia_label = "Hoy"
+        else:
+            dias = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
+            dia_label = dias[cut_local.weekday()]
 
         result["mercadoenvios"].append({
-            "nombre":        colecta["nombre"],
-            "corte":         corte,
-            "llegada_desde": horario["llegada_desde"],
-            "llegada_hasta": horario["llegada_hasta"],
+            "nombre":        f"Colecta {dia_label} {corte_str}",
+            "corte":         corte_str,
+            "llegada_desde": None,
+            "llegada_hasta": None,
             "mins_to_corte": mins_to_corte,
             "status":        cutoff_status(mins_to_corte),
-            "pending_count": colecta_count,
+            "pending_count": cnt,
+            "dia":           dia_label,
         })
+
+    # Fallback: si no hay shipments ML, usar config manual
+    if not result["mercadoenvios"]:
+        for colecta in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", []):
+            horario = colecta.get("horarios", {}).get(weekday)
+            if not horario:
+                continue
+            corte         = horario["corte"]
+            mins_to_corte = mins_until(corte)
+            result["mercadoenvios"].append({
+                "nombre":        colecta["nombre"],
+                "corte":         corte,
+                "llegada_desde": horario["llegada_desde"],
+                "llegada_hasta": horario["llegada_hasta"],
+                "mins_to_corte": mins_to_corte,
+                "status":        cutoff_status(mins_to_corte),
+                "pending_count": 0,
+                "dia":           "Hoy",
+            })
 
     # ── Zonas ─────────────────────────────────────────────────────────────────
     for zona, cfg in CUTOFF_CONFIG.get("zonas", {}).items():

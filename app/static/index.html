@@ -422,7 +422,7 @@
 
     /* Main — columna izquierda fila 3: KPIs + flujo + tops */
     body.tv-mode .grid-kpi {
-      grid-template-columns: repeat(6, 1fr);
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 0.5vw;
       margin: 0;
       min-width: 0;
@@ -433,10 +433,11 @@
       overflow: hidden;
     }
     body.tv-mode .card           { padding: 0.8vh 1vw; min-height: 0; }
-    body.tv-mode .kpi-label      { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.4vh; }
-    body.tv-mode .kpi-value      { font-size: clamp(40px, 5.5vw, 82px); }
-    body.tv-mode .kpi-sub        { font-size: clamp(10px, 0.85vw, 13px); margin-top: 0.4vh; }
-    body.tv-mode .badge          { font-size: clamp(10px, 0.85vw, 13px); padding: 3px 7px; }
+    body.tv-mode .kpi-label      { font-size: clamp(10px, 0.85vw, 13px); margin-bottom: 0.3vh; }
+    body.tv-mode .kpi-value      { font-size: clamp(28px, 4vw, 64px); }
+    body.tv-mode .kpi-sub        { font-size: clamp(9px, 0.75vw, 12px); margin-top: 0.3vh; }
+    body.tv-mode .badge          { font-size: clamp(9px, 0.75vw, 12px); padding: 2px 5px; }
+    body.tv-mode .card           { padding: 0.7vh 0.8vw; }
 
     body.tv-mode .card-flow      { margin: 0; }
     body.tv-mode .card-title     { font-size: clamp(11px, 1vw, 15px); margin-bottom: 0.4vh; }
@@ -1388,17 +1389,22 @@
     }
 
     function renderCutoffCard(item, tipo) {
-      const isME = tipo === 'me';
-      const name = isME ? item.nombre : item.zona;
-      const detail = isME
-        ? `Colecta ${item.llegada_desde}–${item.llegada_hasta}`
-        : `CP ${item.cp_desde}–${item.cp_hasta}`;
+      const isME   = tipo === 'me';
+      const name   = isME ? item.nombre : item.zona;
+      let detail   = '';
+      if (isME) {
+        detail = item.llegada_desde
+          ? `Colecta ${item.llegada_desde}–${item.llegada_hasta}`
+          : (item.dia ? item.dia : '');
+      } else {
+        detail = `CP ${item.cp_desde}–${item.cp_hasta}`;
+      }
       const countdown = item.status === 'passed'
         ? 'Ya pasó'
         : fmtMinsToCorte(item.mins_to_corte);
       const countBadge = item.pending_count > 0
-        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pedidos</span>`
-        : `<span class="cutoff-count neutral">Sin pedidos</span>`;
+        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pdos</span>`
+        : `<span class="cutoff-count neutral">—</span>`;
 
       return `<div class="cutoff-card ${item.status}">
         <div class="cutoff-name">${escapeHtml(name)}</div>
