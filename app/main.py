@@ -1812,15 +1812,32 @@ def cutoffs():
             dias = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
             dia_label = dias[cut_local.weekday()]
 
+        # Cuántos ya se despacharon de este corte
+        me_desp = 0
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM ml_shipments
+                        WHERE logistic_type = 'cross_docking'
+                          AND status IN ('shipped','delivered')
+                          AND cut_time = %s
+                    """, (cut_utc,))
+                    me_desp = cur.fetchone()[0]
+        except Exception:
+            pass
+
         result["mercadoenvios"].append({
-            "nombre":        f"Colecta {dia_label} {corte_str}",
-            "corte":         corte_str,
-            "llegada_desde": None,
-            "llegada_hasta": None,
-            "mins_to_corte": mins_to_corte,
-            "status":        cutoff_status(mins_to_corte),
-            "pending_count": cnt,
-            "dia":           dia_label,
+            "nombre":          f"Colecta {dia_label} {corte_str}",
+            "corte":           corte_str,
+            "llegada_desde":   None,
+            "llegada_hasta":   None,
+            "mins_to_corte":   mins_to_corte,
+            "status":          cutoff_status(mins_to_corte),
+            "pending_count":   cnt,
+            "despachados_hoy": me_desp,
+            "total_hoy":       cnt + me_desp,
+            "dia":             dia_label,
         })
 
     # Fallback: si no hay shipments ML, usar config manual
@@ -1843,10 +1860,47 @@ def cutoffs():
             })
 
     # ── Zonas ─────────────────────────────────────────────────────────────────
+    # Total flex despachado hoy por zona
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        receiver_cp,
+                        COUNT(*) FILTER (WHERE status IN ('shipped','delivered')) AS despachados,
+                        COUNT(*) AS total
+                    FROM ml_shipments
+                    WHERE logistic_type != 'cross_docking'
+                      AND cut_time >= %s AND cut_time < %s
+                      AND receiver_cp IS NOT NULL
+                    GROUP BY receiver_cp
+                """, (today_utc, tomorrow_utc))
+                cp_rows = cur.fetchall()
+        caba_desp = caba_total = gba_desp = gba_total = 0
+        for cp, desp, total in cp_rows:
+            try:
+                cp_num = int((cp or "")[:4])
+                if 1000 <= cp_num <= 1499:
+                    caba_desp  += desp
+                    caba_total += total
+                else:
+                    gba_desp  += desp
+                    gba_total += total
+            except Exception:
+                pass
+        zona_stats = {
+            "CABA": {"despachados": caba_desp, "total": caba_total},
+            "GBA":  {"despachados": gba_desp,  "total": gba_total},
+        }
+    except Exception as e:
+        logger.error("zona stats error: %s", e)
+        zona_stats = {}
+
     for zona, cfg in CUTOFF_CONFIG.get("zonas", {}).items():
         corte         = cfg["corte"]
         mins_to_corte = mins_until(corte)
         zona_key      = "caba" if zona.upper() == "CABA" else "gba"
+        stats         = zona_stats.get(zona.upper(), {})
         result["zonas"].append({
             "zona":          zona,
             "corte":         corte,
@@ -1855,6 +1909,8 @@ def cutoffs():
             "mins_to_corte": mins_to_corte,
             "status":        cutoff_status(mins_to_corte),
             "pending_count": counts[zona_key],
+            "despachados_hoy": stats.get("despachados", 0),
+            "total_hoy":       stats.get("total", 0),
         })
 
     return JSONResponse(result)

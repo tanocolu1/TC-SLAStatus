@@ -672,6 +672,15 @@
 
 
 
+
+    .cutoff-progress {
+      height: 4px; background: rgba(255,255,255,.08);
+      border-radius: 2px; margin: 5px 0 3px; overflow: hidden;
+    }
+    .cutoff-progress-bar { height: 100%; border-radius: 2px; transition: width .3s; }
+    .cutoff-progress-label { font-size: 11px; display: flex; gap: 4px; }
+    body.tv-mode .cutoff-progress { height: 3px; margin: 3px 0 2px; }
+    body.tv-mode .cutoff-progress-label { font-size: clamp(8px, 0.7vw, 11px); }
     .cutoff-time-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .cutoff-count {
       font-size: 12px; font-weight: 700;
@@ -1269,6 +1278,9 @@
         ? `${total.toLocaleString("es-AR")} pedidos en total`
         : "Sin datos";
 
+      // Mostrar despachados hoy en el label de enviados
+      const despHoy = m.despachados_hoy ?? 0;
+
       function setBar(barId, pctId, countId, val, suffix) {
         const pct = total > 0 ? (val / total) * 100 : 0;
         $(barId).style.width  = pct.toFixed(1) + "%";
@@ -1278,7 +1290,7 @@
 
       setBar("flowPrepBar", "flowPrepPct", "flowPrepCount", prep, " pedidos");
       setBar("flowDespBar", "flowDespPct", "flowDespCount", desp, " pedidos");
-      setBar("flowEnvBar",  "flowEnvPct",  "flowEnvCount",  env,  " pedidos");
+      setBar("flowEnvBar",  "flowEnvPct",  "flowEnvCount",  env,  ` (${despHoy} hoy)`);
     }
 
     // ── Actualizar KPIs en el DOM ──────────────────────────────────────────────
@@ -1398,18 +1410,31 @@
       const countdown = item.status === 'passed'
         ? 'Ya pasó'
         : fmtMinsToCorte(item.mins_to_corte);
-      const countBadge = item.pending_count > 0
-        ? `<span class="cutoff-count ${item.status}">${item.pending_count} pdos</span>`
-        : `<span class="cutoff-count neutral">—</span>`;
+
+      // Progreso despacho
+      const total    = item.total_hoy || 0;
+      const desp     = item.despachados_hoy || 0;
+      const pending  = item.pending_count || 0;
+      const pct      = total > 0 ? Math.round((desp / total) * 100) : 0;
+      const progColor = pct === 100 ? '#3fb950' : pct >= 50 ? '#e3b341' : '#f85149';
+
+      const progressBar = total > 0 ? `
+        <div class="cutoff-progress">
+          <div class="cutoff-progress-bar" style="width:${pct}%;background:${progColor}"></div>
+        </div>
+        <div class="cutoff-progress-label">
+          <span style="color:${progColor}">${desp} despachados</span>
+          <span style="color:var(--muted)">/ ${total} total</span>
+        </div>` : `<div class="cutoff-progress-label" style="color:var(--muted)">Sin shipments</div>`;
 
       return `<div class="cutoff-card ${item.status}">
         <div class="cutoff-name">${escapeHtml(name)}</div>
         <div class="cutoff-time-row">
           <span class="cutoff-time">⏱ ${item.corte}</span>
-          ${countBadge}
+          <span class="cutoff-countdown">${countdown}</span>
         </div>
         <div class="cutoff-detail">${detail}</div>
-        <div class="cutoff-countdown">${countdown}</div>
+        ${progressBar}
       </div>`;
     }
 
