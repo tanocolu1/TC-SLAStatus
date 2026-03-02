@@ -2116,6 +2116,27 @@ def ml_shipments_summary():
         for r in rows
     ]
 
+
+@app.get("/api/debug/ml")
+def debug_ml():
+    """Debug: estado de integración ML."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM orders_meta WHERE ml_order_id IS NOT NULL")
+            with_ml = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM orders_meta")
+            total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM ml_shipments")
+            shipments = cur.fetchone()[0]
+            cur.execute("SELECT account_id, nickname, expires_at FROM ml_tokens")
+            tokens = cur.fetchall()
+    return {
+        "orders_with_ml_order_id": with_ml,
+        "total_orders": total,
+        "ml_shipments": shipments,
+        "accounts": [{"account_id": r[0], "nickname": r[1], "expires_at": r[2].isoformat()} for r in tokens]
+    }
+
 # ===============================
 # FRONT
 # ===============================
