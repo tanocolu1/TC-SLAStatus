@@ -1057,11 +1057,12 @@
       const label = sel ? sel.options[sel.selectedIndex].text : '';
       document.querySelector('.title').textContent =
         currentAccount === 'all' ? 'Depósito · Dashboard' : `Depósito · ${label}`;
-      // Refrescar todo
-      refreshMetrics();
-      refreshAlerts();
-      refreshCutoffs();
-      refreshTops();
+      // Forzar refresh inmediato de todo
+      (async () => {
+        await tick();
+        await refreshCutoffs();
+        if (!IS_TV) await refreshPending();
+      })();
     }
 
     async function initAccounts() {
@@ -1394,8 +1395,6 @@
     }
 
     // ── Tick principal ─────────────────────────────────────────────────────────
-    async function refreshMetrics() { await tick(); }
-
     async function tick() {
       startCountdown(kpiIntervalMs);
       topsCounter++;
