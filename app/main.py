@@ -1896,39 +1896,42 @@ def _ml_sync_shipments(account_id: str) -> dict:
 
     for ml_order_id, order_id in rows:
         try:
-            # Obtener shipment del pedido ML
+            # Obtener shipment del pedido ML via orders endpoint
             r = requests.get(
                 f"{ML_API_URL}/orders/{ml_order_id}/shipments",
                 headers=headers, timeout=10
             )
             if r.status_code == 404:
                 continue
-            r.raise_for_status()
+            if not r.ok:
+                continue
             ship = r.json()
 
-            shipment_id  = str(ship.get("id", ""))
+            shipment_id = str(ship.get("id", ""))
             if not shipment_id:
                 continue
 
             # Extraer datos relevantes
-            receiver     = ship.get("receiver_address", {})
-            cp           = receiver.get("zip_code", "")
-            cut_time     = None
-            promised     = None
+            receiver = ship.get("receiver_address", {}) or {}
+            cp       = receiver.get("zip_code", "") if isinstance(receiver, dict) else ""
+            cut_time = None
+            promised = None
 
-            # Fechas de SLA
             shipping_option = ship.get("shipping_option", {}) or {}
-            estimated = shipping_option.get("estimated_delivery_time", {}) or {}
-            if estimated.get("date"):
+            estimated       = shipping_option.get("estimated_delivery_time", {}) or {}
+
+            # pay_before es el horario límite real de despacho
+            pay_before = estimated.get("pay_before")
+            if pay_before:
                 try:
-                    promised = datetime.fromisoformat(estimated["date"].replace("Z", "+00:00"))
+                    cut_time = datetime.fromisoformat(pay_before.replace("Z", "+00:00"))
                 except Exception:
                     pass
 
-            # Cut time si viene
-            if ship.get("cut_time"):
+            # Fecha prometida de entrega
+            if estimated.get("date"):
                 try:
-                    cut_time = datetime.fromisoformat(ship["cut_time"].replace("Z", "+00:00"))
+                    promised = datetime.fromisoformat(estimated["date"].replace("Z", "+00:00"))
                 except Exception:
                     pass
 
