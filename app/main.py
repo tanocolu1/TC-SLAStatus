@@ -170,6 +170,7 @@ async def _auto_sync_loop() -> None:
     except Exception as exc:
         logger.error("Auto-sync inicial falló: %s", exc)
 
+    ml_sync_counter = 0
     while True:
         await asyncio.sleep(AUTO_SYNC_EVERY)
         try:
@@ -177,6 +178,17 @@ async def _auto_sync_loop() -> None:
             logger.info("Auto-sync OK: %s", result)
         except Exception as exc:
             logger.error("Auto-sync falló: %s", exc)
+
+        # Sync ML cada 3 ciclos (~15 min)
+        ml_sync_counter += 1
+        if ml_sync_counter % 3 == 0:
+            try:
+                accounts = _ml_list_accounts()
+                for acc in accounts:
+                    res = await asyncio.to_thread(_ml_sync_shipments, acc["account_id"])
+                    logger.info("Auto ML sync: %s", res)
+            except Exception as exc:
+                logger.error("Auto ML sync falló: %s", exc)
 
 
 
@@ -1706,48 +1718,61 @@ def cutoffs():
         if mins <= 60:  return "warning"
         return "pending"
 
-    # ── Conteos desde DB ──────────────────────────────────────────────────────
-    me_statuses   = ["Mercado Envíos"]
-    flex_statuses = [s for s in STATUS_MAP.get("DESPACHO", []) if s not in me_statuses]
-    active_statuses = (
-        STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"] +
-        STATUS_MAP["PREPARACION"] + STATUS_MAP["EMBALADO"] + STATUS_MAP["DESPACHO"]
-    )
+    # ── Conteos desde ml_shipments (datos reales de ML) ──────────────────────
+    # cut_time viene en UTC, convertir a ARG para agrupar por corte del día
+    TZ_UTC = timezone.utc
+    today_local = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
+    tomorrow_local = today_local + timedelta(days=1)
+    today_utc = today_local.astimezone(TZ_UTC)
+    tomorrow_utc = tomorrow_local.astimezone(TZ_UTC)
 
+    # Shipments pendientes de hoy y mañana (ready_to_ship o pending)
+    counts_by_cut = {}  # cut_time_hour_utc -> count
     counts = {"me": 0, "caba": 0, "gba": 0}
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # Mercado Envíos: todos los pedidos en estado "Mercado Envíos"
                 cur.execute("""
-                    SELECT COUNT(*) FROM orders_current
-                    WHERE status = ANY(%s)
-                """, (me_statuses,))
-                counts["me"] = cur.fetchone()[0]
+                    SELECT
+                        logistic_type,
+                        cut_time,
+                        receiver_cp,
+                        COUNT(*)::int
+                    FROM ml_shipments
+                    WHERE status IN ('ready_to_ship', 'pending')
+                      AND cut_time IS NOT NULL
+                      AND cut_time >= %s AND cut_time < %s
+                    GROUP BY logistic_type, cut_time, receiver_cp
+                """, (today_utc, tomorrow_utc + timedelta(days=1)))
+                rows = cur.fetchall()
 
-                # Flex CABA: transportistas flex con CP 1000-1499
-                cur.execute("""
-                    SELECT COUNT(*) FROM orders_current oc
-                    JOIN orders_meta om ON om.order_id = oc.order_id
-                    WHERE oc.status = ANY(%s)
-                      AND om.delivery_postcode ~ '^[0-9]+$'
-                      AND CAST(LEFT(om.delivery_postcode, 4) AS INT)
-                          BETWEEN %s AND %s
-                """, (flex_statuses, 1000, 1499))
-                counts["caba"] = cur.fetchone()[0]
+        # Agrupar por tipo
+        me_count = 0
+        caba_count = 0
+        gba_count = 0
+        cut_groups = {}  # cut_time_iso -> count (para colectas ME)
 
-                # Flex GBA: transportistas flex con CP 1500-9999
-                cur.execute("""
-                    SELECT COUNT(*) FROM orders_current oc
-                    JOIN orders_meta om ON om.order_id = oc.order_id
-                    WHERE oc.status = ANY(%s)
-                      AND om.delivery_postcode ~ '^[0-9]+$'
-                      AND CAST(LEFT(om.delivery_postcode, 4) AS INT)
-                          BETWEEN %s AND %s
-                """, (flex_statuses, 1500, 9999))
-                counts["gba"] = cur.fetchone()[0]
+        for logistic_type, cut_time_val, cp, cnt in rows:
+            if logistic_type == "cross_docking":
+                me_count += cnt
+                cut_key = cut_time_val.isoformat() if cut_time_val else "unknown"
+                cut_groups[cut_key] = cut_groups.get(cut_key, 0) + cnt
+            else:
+                # self_service = Flex, separar por CP
+                try:
+                    cp_num = int((cp or "")[:4])
+                    if 1000 <= cp_num <= 1499:
+                        caba_count += cnt
+                    else:
+                        gba_count += cnt
+                except Exception:
+                    gba_count += cnt
+
+        counts = {"me": me_count, "caba": caba_count, "gba": gba_count,
+                  "cut_groups": cut_groups}
     except Exception as e:
         logger.error("cutoffs count error: %s", e)
+        counts = {"me": 0, "caba": 0, "gba": 0, "cut_groups": {}}
 
     result = {"mercadoenvios": [], "zonas": [], "now": now_local.isoformat()}
 
@@ -1758,6 +1783,29 @@ def cutoffs():
             continue
         corte         = horario["corte"]
         mins_to_corte = mins_until(corte)
+        # Buscar cuántos shipments ML coinciden con este corte
+        # El cut_time de ML está en UTC, el corte configurado está en hora local
+        corte_h, corte_m = map(int, corte.split(":"))
+        corte_utc_dt = datetime(now_local.year, now_local.month, now_local.day,
+                                corte_h, corte_m, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+        # Buscar en ventana de ±30 min alrededor del corte configurado
+        colecta_count = 0
+        for cut_iso, cnt in counts.get("cut_groups", {}).items():
+            try:
+                cut_dt = datetime.fromisoformat(cut_iso)
+                diff = abs((cut_dt - corte_utc_dt).total_seconds())
+                if diff <= 1800:  # 30 min de tolerancia
+                    colecta_count += cnt
+            except Exception:
+                pass
+        # Si no hay match por hora, dividir equitativamente entre colectas del día
+        if colecta_count == 0 and counts["me"] > 0:
+            total_colectas_hoy = sum(
+                1 for c in CUTOFF_CONFIG.get("mercadoenvios", {}).get("colectas", [])
+                if c.get("horarios", {}).get(weekday)
+            )
+            colecta_count = counts["me"] // max(total_colectas_hoy, 1)
+
         result["mercadoenvios"].append({
             "nombre":        colecta["nombre"],
             "corte":         corte,
@@ -1765,7 +1813,7 @@ def cutoffs():
             "llegada_hasta": horario["llegada_hasta"],
             "mins_to_corte": mins_to_corte,
             "status":        cutoff_status(mins_to_corte),
-            "pending_count": counts["me"],
+            "pending_count": colecta_count,
         })
 
     # ── Zonas ─────────────────────────────────────────────────────────────────
