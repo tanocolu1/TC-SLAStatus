@@ -1191,9 +1191,11 @@ def _get_zone_cutoff_mins(postcode: str | None) -> int | None:
 
 @app.get("/api/alerts")
 def alerts():
-    """Pedidos en preparación hace más de 2hs, priorizados por corte de zona."""
-    prep_statuses = STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"]
-    cutoff_2h = datetime.now(timezone.utc) - timedelta(hours=2)
+    """Pedidos cuyo cut_time ML ya pasó y siguen en preparación/embalado.
+    Fallback a >2hs si no tienen shipment ML."""
+    now_utc = datetime.now(timezone.utc)
+    prep_pack_statuses = (STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] +
+                          STATUS_MAP["RECEPCION"] + STATUS_MAP["EMBALADO"])
 
     q = """
     SELECT
@@ -1208,55 +1210,89 @@ def alerts():
             ) FILTER (WHERE oi.order_product_id IS NOT NULL),
             '[]'::json
         ) AS products,
-        om.delivery_postcode
+        om.delivery_postcode,
+        ms.cut_time,
+        EXTRACT(EPOCH FROM (ms.cut_time - NOW())) / 60.0 AS mins_to_cut,
+        ms.logistic_type
     FROM orders_current oc
-    LEFT JOIN order_items oi ON oi.order_id = oc.order_id
-    LEFT JOIN orders_meta om ON om.order_id = oc.order_id
+    LEFT JOIN order_items  oi ON oi.order_id  = oc.order_id
+    LEFT JOIN orders_meta  om ON om.order_id  = oc.order_id
+    LEFT JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
+              AND ms.status NOT IN ('cancelled','delivered','not_delivered')
     WHERE oc.status = ANY(%s)
       AND oc.status <> ALL(%s)
-      AND COALESCE(oc.status_since, oc.updated_ts) < %s
-    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts, om.delivery_postcode
-    ORDER BY since ASC
+      AND (
+        -- Tiene cut_time ML ya vencido
+        (ms.cut_time IS NOT NULL AND ms.cut_time < NOW())
+        OR
+        -- No tiene shipment ML y lleva más de 2hs
+        (ms.cut_time IS NULL AND COALESCE(oc.status_since, oc.updated_ts) < %s)
+      )
+    GROUP BY oc.order_id, oc.status, oc.status_since, oc.updated_ts,
+             om.delivery_postcode, ms.cut_time, ms.logistic_type
+    ORDER BY COALESCE(ms.cut_time, COALESCE(oc.status_since, oc.updated_ts)) ASC
     LIMIT 100
     """
+    cutoff_2h = now_utc - timedelta(hours=2)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(q, (prep_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h))
+            cur.execute(q, (prep_pack_statuses, EXCLUDED_STATUSES or ["__never__"], cutoff_2h))
             rows = cur.fetchall()
 
     orders = []
     for r in rows:
-        postcode = r[5]
-        mins_to_zone_cutoff = _get_zone_cutoff_mins(postcode)
+        postcode      = r[5]
+        cut_time      = r[6]
+        mins_to_cut   = float(r[7]) if r[7] is not None else None
+        logistic_type = r[8]
 
-        # Urgencia: crítico si queda poco para el corte de zona
-        urgency = "normal"
-        if mins_to_zone_cutoff is not None:
-            if mins_to_zone_cutoff < 0:
+        # Urgencia basada en cut_time ML
+        if cut_time is not None:
+            if mins_to_cut is not None and mins_to_cut < -60:
+                urgency = "very_late"    # más de 1h pasado el corte
+            elif mins_to_cut is not None and mins_to_cut < 0:
                 urgency = "passed_cutoff"
-            elif mins_to_zone_cutoff <= 30:
+            elif mins_to_cut is not None and mins_to_cut <= 30:
                 urgency = "critical"
-            elif mins_to_zone_cutoff <= 60:
+            else:
                 urgency = "warning"
+        else:
+            # Sin shipment ML — usar zona como antes
+            mins_to_zone = _get_zone_cutoff_mins(postcode)
+            if mins_to_zone is None or mins_to_zone < -60:
+                urgency = "normal"
+            elif mins_to_zone < 0:
+                urgency = "passed_cutoff"
+            elif mins_to_zone <= 30:
+                urgency = "critical"
+            else:
+                urgency = "warning"
+            mins_to_cut = mins_to_zone
+
+        cut_label = None
+        if cut_time:
+            cut_local = cut_time.astimezone(LOCAL_TZ)
+            cut_label = cut_local.strftime("%H:%M")
 
         orders.append({
-            "order_id":           r[0],
-            "status":             r[1],
-            "since":              r[2].isoformat(),
-            "mins":               round(float(r[3]), 0),
-            "products":           r[4],
-            "postcode":           postcode,
-            "mins_to_zone_cutoff": mins_to_zone_cutoff,
-            "urgency":            urgency,
+            "order_id":        r[0],
+            "status":          r[1],
+            "since":           r[2].isoformat(),
+            "mins":            round(float(r[3]), 0),
+            "products":        r[4],
+            "postcode":        postcode,
+            "cut_time":        cut_time.isoformat() if cut_time else None,
+            "cut_label":       cut_label,
+            "mins_to_cut":     round(mins_to_cut, 0) if mins_to_cut is not None else None,
+            "logistic_type":   logistic_type,
+            "urgency":         urgency,
+            # Retrocompat
+            "mins_to_zone_cutoff": mins_to_cut,
         })
 
-    # Ordenar: críticos primero, luego por tiempo en estado
-    orders.sort(key=lambda x: (
-        0 if x["urgency"] == "critical" else
-        1 if x["urgency"] == "warning" else
-        2 if x["urgency"] == "passed_cutoff" else 3,
-        x["mins"] * -1
-    ))
+    # Ordenar: muy tarde primero, luego passed, luego críticos
+    urgency_order = {"very_late": 0, "passed_cutoff": 1, "critical": 2, "warning": 3, "normal": 4}
+    orders.sort(key=lambda x: (urgency_order.get(x["urgency"], 4), x["mins"] * -1))
 
     return JSONResponse({"count": len(orders), "orders": orders[:50]})
 

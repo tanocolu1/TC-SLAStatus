@@ -1517,9 +1517,13 @@
 
     function urgencyBadge(o) {
       if (!o.urgency || o.urgency === 'normal') return '';
-      if (o.urgency === 'critical')     return '<span class="badge bad" style="margin-left:4px">⚡ Corte en ' + o.mins_to_zone_cutoff + 'min</span>';
-      if (o.urgency === 'warning')      return '<span class="badge warn" style="margin-left:4px">⏰ Corte en ' + o.mins_to_zone_cutoff + 'min</span>';
-      if (o.urgency === 'passed_cutoff') return '<span class="badge bad" style="margin-left:4px">⛔ Corte pasado</span>';
+      const cutLabel = o.cut_label ? ` ${o.cut_label}` : '';
+      const minsAbs  = o.mins_to_cut != null ? Math.abs(Math.round(o.mins_to_cut)) : null;
+      const minsStr  = minsAbs != null ? ` (${minsAbs}min)` : '';
+      if (o.urgency === 'very_late')    return `<span class="badge bad" style="margin-left:4px">🔴 Corte${cutLabel}${minsStr} pasado</span>`;
+      if (o.urgency === 'passed_cutoff') return `<span class="badge bad" style="margin-left:4px">⛔ Corte${cutLabel} pasado</span>`;
+      if (o.urgency === 'critical')     return `<span class="badge bad" style="margin-left:4px">⚡ Corte${cutLabel} en ${Math.round(o.mins_to_cut)}min</span>`;
+      if (o.urgency === 'warning')      return `<span class="badge warn" style="margin-left:4px">⏰ Corte${cutLabel} en ${Math.round(o.mins_to_cut)}min</span>`;
       return '';
     }
 
@@ -1554,16 +1558,19 @@
         const banner = $('alertBanner');
         if (data.count > 0) {
           banner.classList.add('visible');
-          const critical = data.orders.filter(o => o.urgency === 'critical' || o.urgency === 'passed_cutoff');
-          $('alertTitle').textContent = `⚠️ ${data.count} pedido${data.count > 1 ? 's' : ''} hace más de 2hs en preparación` +
-            (critical.length > 0 ? ` — ${critical.length} con corte próximo` : '');
+          const veryLate = data.orders.filter(o => o.urgency === 'very_late' || o.urgency === 'passed_cutoff');
+          const critical = data.orders.filter(o => o.urgency === 'critical');
+          let titleExtra = '';
+          if (veryLate.length > 0) titleExtra = ` — ${veryLate.length} con corte vencido`;
+          else if (critical.length > 0) titleExtra = ` — ${critical.length} con corte próximo`;
+          $('alertTitle').textContent = `⚠️ ${data.count} pedido${data.count > 1 ? 's' : ''} con corte vencido o próximo${titleExtra}`;
           const oldest = data.orders[0];
           const hs = Math.floor(oldest.mins / 60);
           const ms = Math.round(oldest.mins % 60);
-          const zonaTxt = oldest.mins_to_zone_cutoff != null
-            ? ` · Corte zona: ${oldest.mins_to_zone_cutoff > 0 ? 'en ' + oldest.mins_to_zone_cutoff + 'min' : 'PASADO'}`
+          const cutTxt = oldest.cut_label
+            ? ` · Corte ML: ${oldest.cut_label}${oldest.mins_to_cut < 0 ? ' (PASADO)' : ' en ' + Math.round(oldest.mins_to_cut) + 'min'}`
             : '';
-          $('alertSub').textContent = `El más urgente: #${oldest.order_id} — ${hs}h ${ms}m en "${oldest.status}"${zonaTxt}`;
+          $('alertSub').textContent = `El más urgente: #${oldest.order_id} — ${hs}h ${ms}m en "${oldest.status}"${cutTxt}`;
           alertData = data.orders;
           if (alertOpen) renderAlertDetail(alertData);
         } else {
