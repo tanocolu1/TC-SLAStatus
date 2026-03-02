@@ -27,6 +27,14 @@ logger = logging.getLogger("uvicorn.error")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", "10"))
 
+ML_APP_ID  = os.environ.get("ML_APP_ID", "")
+ML_SECRET  = os.environ.get("ML_SECRET", "")
+ML_SITE    = os.environ.get("ML_SITE", "MLA")  # Argentina
+ML_API_URL = "https://api.mercadolibre.com"
+ML_AUTH_URL = "https://auth.mercadolibre.com.ar/authorization"
+ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
+ML_REDIRECT_URI = os.environ.get("ML_REDIRECT_URI", "https://tc-slastatus-production.up.railway.app/ml/callback")
+
 BL_API_URL = os.environ.get("BL_API_URL", "https://api.baselinker.com/connector.php")
 BL_TOKEN = os.environ.get("BL_TOKEN", "")
 SYNC_SECRET = os.environ.get("SYNC_SECRET", "")
@@ -274,6 +282,56 @@ def _ensure_schema() -> None:
                   END IF;
                 END $$;
             """)
+            # Migrar: agregar ml_order_id a orders_meta si no existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'orders_meta' AND column_name = 'ml_order_id'
+                  ) THEN
+                    ALTER TABLE orders_meta ADD COLUMN ml_order_id TEXT NULL;
+                  END IF;
+                END $$;
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_meta_ml_order_id ON orders_meta(ml_order_id);")
+
+            # Tabla de tokens ML por cuenta
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ml_tokens (
+                  account_id    TEXT PRIMARY KEY,
+                  access_token  TEXT NOT NULL,
+                  refresh_token TEXT NOT NULL,
+                  expires_at    TIMESTAMPTZ NOT NULL,
+                  ml_user_id    TEXT NULL,
+                  nickname      TEXT NULL,
+                  updated_ts    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+
+            # Tabla de shipments ML
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ml_shipments (
+                  shipment_id      TEXT PRIMARY KEY,
+                  order_id         TEXT NULL,
+                  ml_order_id      TEXT NULL,
+                  status           TEXT NULL,
+                  substatus        TEXT NULL,
+                  shipping_type    TEXT NULL,
+                  service_id       TEXT NULL,
+                  date_created     TIMESTAMPTZ NULL,
+                  last_updated     TIMESTAMPTZ NULL,
+                  receiver_cp      TEXT NULL,
+                  logistic_type    TEXT NULL,
+                  cut_time         TIMESTAMPTZ NULL,
+                  promised_date    TIMESTAMPTZ NULL,
+                  raw              JSONB NULL,
+                  updated_ts       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ml_shipments_ml_order_id ON ml_shipments(ml_order_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ml_shipments_order_id    ON ml_shipments(order_id);")
+
             # Migrar: agregar delivery_postcode a orders_meta si no existe
             cur.execute("""
                 DO $$
@@ -1726,6 +1784,337 @@ def cutoffs():
         })
 
     return JSONResponse(result)
+
+
+# ===============================
+# MERCADO LIBRE — OAuth + Sync
+# ===============================
+
+def _ml_get_tokens(account_id: str) -> dict | None:
+    """Lee tokens de la DB para una cuenta."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT access_token, refresh_token, expires_at, ml_user_id, nickname
+                FROM ml_tokens WHERE account_id = %s
+            """, (account_id,))
+            row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "access_token":  row[0],
+        "refresh_token": row[1],
+        "expires_at":    row[2],
+        "ml_user_id":    row[3],
+        "nickname":      row[4],
+    }
+
+
+def _ml_save_tokens(account_id: str, data: dict) -> None:
+    """Guarda/actualiza tokens en la DB."""
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600) - 300)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ml_tokens(account_id, access_token, refresh_token, expires_at, ml_user_id, updated_ts)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT(account_id) DO UPDATE
+                SET access_token  = EXCLUDED.access_token,
+                    refresh_token = EXCLUDED.refresh_token,
+                    expires_at    = EXCLUDED.expires_at,
+                    ml_user_id    = COALESCE(EXCLUDED.ml_user_id, ml_tokens.ml_user_id),
+                    updated_ts    = NOW()
+            """, (account_id, data["access_token"], data["refresh_token"],
+                  expires_at, str(data.get("user_id", ""))))
+        conn.commit()
+
+
+def _ml_refresh_token(account_id: str, refresh_token: str) -> dict | None:
+    """Renueva el access_token usando el refresh_token."""
+    try:
+        r = requests.post(ML_TOKEN_URL, json={
+            "grant_type":    "refresh_token",
+            "client_id":     ML_APP_ID,
+            "client_secret": ML_SECRET,
+            "refresh_token": refresh_token,
+        }, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        _ml_save_tokens(account_id, data)
+        logger.info("ML token renovado para cuenta %s", account_id)
+        return data
+    except Exception as e:
+        logger.error("Error renovando token ML cuenta %s: %s", account_id, e)
+        return None
+
+
+def _ml_get_valid_token(account_id: str) -> str | None:
+    """Devuelve un access_token válido, renovándolo si es necesario."""
+    tokens = _ml_get_tokens(account_id)
+    if not tokens:
+        return None
+    # Renovar si expira en menos de 10 minutos
+    if tokens["expires_at"] <= datetime.now(timezone.utc) + timedelta(minutes=10):
+        data = _ml_refresh_token(account_id, tokens["refresh_token"])
+        return data["access_token"] if data else None
+    return tokens["access_token"]
+
+
+def _ml_list_accounts() -> list[str]:
+    """Lista todas las cuentas ML autorizadas."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT account_id, nickname FROM ml_tokens ORDER BY account_id")
+            rows = cur.fetchall()
+    return [{"account_id": r[0], "nickname": r[1]} for r in rows]
+
+
+def _ml_sync_shipments(account_id: str) -> dict:
+    """Sincroniza shipments de ML para una cuenta — últimas 48hs."""
+    token = _ml_get_valid_token(account_id)
+    if not token:
+        return {"error": "no_token", "account_id": account_id}
+
+    headers = {"Authorization": f"Bearer {token}"}
+    synced = 0
+    errors = 0
+
+    # Traer pedidos activos con ml_order_id
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT om.ml_order_id, oc.order_id
+                FROM orders_meta om
+                JOIN orders_current oc ON oc.order_id = om.order_id
+                WHERE om.ml_order_id IS NOT NULL
+                  AND om.ml_order_id <> ''
+                  AND oc.status <> ALL(%s)
+                ORDER BY om.updated_ts DESC
+                LIMIT 500
+            """, (["Cancelado", "Full", "Pedidos antiguos", "Entregado"] + EXCLUDED_STATUSES,))
+            rows = cur.fetchall()
+
+    for ml_order_id, order_id in rows:
+        try:
+            # Obtener shipment del pedido ML
+            r = requests.get(
+                f"{ML_API_URL}/orders/{ml_order_id}/shipments",
+                headers=headers, timeout=10
+            )
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            ship = r.json()
+
+            shipment_id  = str(ship.get("id", ""))
+            if not shipment_id:
+                continue
+
+            # Extraer datos relevantes
+            receiver     = ship.get("receiver_address", {})
+            cp           = receiver.get("zip_code", "")
+            cut_time     = None
+            promised     = None
+
+            # Fechas de SLA
+            shipping_option = ship.get("shipping_option", {}) or {}
+            estimated = shipping_option.get("estimated_delivery_time", {}) or {}
+            if estimated.get("date"):
+                try:
+                    promised = datetime.fromisoformat(estimated["date"].replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
+            # Cut time si viene
+            if ship.get("cut_time"):
+                try:
+                    cut_time = datetime.fromisoformat(ship["cut_time"].replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO ml_shipments(
+                            shipment_id, order_id, ml_order_id, status, substatus,
+                            shipping_type, service_id, date_created, last_updated,
+                            receiver_cp, logistic_type, cut_time, promised_date, raw, updated_ts
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                        ON CONFLICT(shipment_id) DO UPDATE
+                        SET status        = EXCLUDED.status,
+                            substatus     = EXCLUDED.substatus,
+                            last_updated  = EXCLUDED.last_updated,
+                            cut_time      = EXCLUDED.cut_time,
+                            promised_date = EXCLUDED.promised_date,
+                            raw           = EXCLUDED.raw,
+                            updated_ts    = NOW()
+                    """, (
+                        shipment_id, order_id, ml_order_id,
+                        ship.get("status"), ship.get("substatus"),
+                        ship.get("shipping_type"), str(ship.get("service_id", "")),
+                        ship.get("date_created"), ship.get("last_updated"),
+                        cp, ship.get("logistic_type"),
+                        cut_time, promised,
+                        json.dumps(ship),
+                    ))
+                conn.commit()
+            synced += 1
+            time.sleep(0.05)  # rate limit gentil
+
+        except Exception as e:
+            logger.error("ML shipment error order %s: %s", ml_order_id, e)
+            errors += 1
+
+    return {"account_id": account_id, "synced": synced, "errors": errors}
+
+
+# ── OAuth endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/ml/auth/{account_id}")
+def ml_auth(account_id: str):
+    """Redirige a ML para autorizar una cuenta."""
+    from fastapi.responses import RedirectResponse
+    url = (
+        f"{ML_AUTH_URL}"
+        f"?response_type=code"
+        f"&client_id={ML_APP_ID}"
+        f"&redirect_uri={ML_REDIRECT_URI}"
+        f"&state={account_id}"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/ml/callback")
+def ml_callback(code: str, state: str = "default"):
+    """Recibe el código OAuth de ML y lo intercambia por tokens."""
+    account_id = state
+    try:
+        r = requests.post(ML_TOKEN_URL, json={
+            "grant_type":   "authorization_code",
+            "client_id":    ML_APP_ID,
+            "client_secret": ML_SECRET,
+            "code":         code,
+            "redirect_uri": ML_REDIRECT_URI,
+        }, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        _ml_save_tokens(account_id, data)
+
+        # Guardar nickname
+        token = data["access_token"]
+        user_r = requests.get(f"{ML_API_URL}/users/me", headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        if user_r.ok:
+            udata = user_r.json()
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE ml_tokens SET nickname=%s, ml_user_id=%s WHERE account_id=%s",
+                                (udata.get("nickname"), str(udata.get("id","")), account_id))
+                conn.commit()
+
+        return HTMLResponse(f"""
+            <html><body style="font-family:sans-serif;padding:40px;background:#0b0f14;color:#e6edf3">
+            <h2>✅ Cuenta autorizada</h2>
+            <p>Cuenta <b>{account_id}</b> conectada correctamente.</p>
+            <p><a href="/" style="color:#58a6ff">← Volver al dashboard</a></p>
+            </body></html>
+        """)
+    except Exception as e:
+        logger.error("ML OAuth error: %s", e)
+        return HTMLResponse(f"<h2>Error: {e}</h2>", status_code=500)
+
+
+@app.get("/ml/accounts")
+def ml_accounts():
+    """Lista las cuentas ML autorizadas."""
+    return _ml_list_accounts()
+
+
+@app.post("/ml/sync")
+def ml_sync_all(background_tasks: BackgroundTasks):
+    """Dispara sync de shipments para todas las cuentas."""
+    def _run():
+        accounts = _ml_list_accounts()
+        for acc in accounts:
+            result = _ml_sync_shipments(acc["account_id"])
+            logger.info("ML sync: %s", result)
+    background_tasks.add_task(_run)
+    return {"ok": True, "status": "ML sync iniciado en background"}
+
+
+@app.post("/ml/notifications")
+async def ml_notifications(request: Request):
+    """Recibe notificaciones push de ML y dispara sync del pedido afectado."""
+    try:
+        body = await request.json()
+        topic   = body.get("topic", "")
+        res_id  = body.get("resource", "")
+        user_id = str(body.get("user_id", ""))
+        logger.info("ML notification: topic=%s resource=%s user=%s", topic, res_id, user_id)
+
+        if topic in ("shipments", "orders_v2") and res_id:
+            # Buscar la cuenta por ml_user_id
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT account_id FROM ml_tokens WHERE ml_user_id=%s LIMIT 1", (user_id,))
+                    row = cur.fetchone()
+            if row:
+                account_id = row[0]
+                token = _ml_get_valid_token(account_id)
+                if token:
+                    # Sync del recurso específico
+                    headers = {"Authorization": f"Bearer {token}"}
+                    r = requests.get(f"{ML_API_URL}{res_id}", headers=headers, timeout=10)
+                    if r.ok:
+                        ship = r.json()
+                        logger.info("ML notif sync OK: %s", ship.get("id"))
+    except Exception as e:
+        logger.error("ML notification error: %s", e)
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/api/ml-shipments")
+def ml_shipments_summary():
+    """Resumen de shipments ML — colectas asignadas por cut_time."""
+    now_local = datetime.now(LOCAL_TZ)
+    today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    tomorrow    = today_start + timedelta(days=1)
+
+    q = """
+    SELECT
+        s.shipment_id,
+        s.order_id,
+        s.status,
+        s.logistic_type,
+        s.cut_time AT TIME ZONE %s AS cut_local,
+        s.promised_date AT TIME ZONE %s AS promised_local,
+        s.receiver_cp,
+        oc.status AS current_status
+    FROM ml_shipments s
+    LEFT JOIN orders_current oc ON oc.order_id = s.order_id
+    WHERE s.cut_time >= %s AND s.cut_time < %s
+      AND (oc.status IS NULL OR oc.status <> ALL(%s))
+    ORDER BY s.cut_time ASC
+    LIMIT 200
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(q, (TZ_NAME, TZ_NAME, today_start, tomorrow,
+                           EXCLUDED_STATUSES or ["__never__"]))
+            rows = cur.fetchall()
+
+    return [
+        {
+            "shipment_id":    r[0],
+            "order_id":       r[1],
+            "status":         r[2],
+            "logistic_type":  r[3],
+            "cut_time":       r[4].isoformat() if r[4] else None,
+            "promised_date":  r[5].isoformat() if r[5] else None,
+            "receiver_cp":    r[6],
+            "current_status": r[7],
+        }
+        for r in rows
+    ]
 
 # ===============================
 # FRONT
