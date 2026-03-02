@@ -2117,6 +2117,59 @@ def ml_shipments_summary():
     ]
 
 
+
+@app.post("/api/debug/ml-backfill")
+async def ml_backfill(background_tasks: BackgroundTasks):
+    """Backfill ml_order_id desde Baselinker para todos los pedidos sin él."""
+    def _run():
+        session = _make_session()
+        page = 1
+        filled = 0
+        errors = 0
+        while True:
+            try:
+                params = {
+                    "date_confirmed_from": 1700000000,
+                    "page": page,
+                }
+                resp = session.post(
+                    BL_API_URL,
+                    headers={"X-BLToken": BL_TOKEN},
+                    data={"method": "getOrders", "parameters": json.dumps(params)},
+                    timeout=30,
+                )
+                data = resp.json()
+                orders = data.get("orders", [])
+                if not orders:
+                    break
+                rows = []
+                for o in orders:
+                    eid = (o.get("extra_field_1") or "").strip()
+                    if eid:
+                        rows.append((eid, str(o.get("order_id", ""))))
+                if rows:
+                    with get_conn() as conn:
+                        with conn.cursor() as cur:
+                            for ml_id, order_id in rows:
+                                cur.execute("""
+                                    UPDATE orders_meta SET ml_order_id = %s
+                                    WHERE order_id = %s AND (ml_order_id IS NULL OR ml_order_id = '')
+                                """, (ml_id, order_id))
+                        conn.commit()
+                    filled += len(rows)
+                page += 1
+                if len(orders) < 100:
+                    break
+            except Exception as e:
+                logger.error("ML backfill error page %d: %s", page, e)
+                errors += 1
+                if errors > 5:
+                    break
+        logger.info("ML backfill completo: %d pedidos actualizados", filled)
+
+    background_tasks.add_task(_run)
+    return {"ok": True, "status": "ML backfill iniciado en background"}
+
 @app.get("/api/debug/ml")
 def debug_ml():
     """Debug: estado de integración ML."""
