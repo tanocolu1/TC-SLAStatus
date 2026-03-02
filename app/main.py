@@ -2181,6 +2181,34 @@ async def ml_backfill(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run)
     return {"ok": True, "status": "ML backfill iniciado en background"}
 
+
+@app.get("/api/debug/ml-shipments-raw")
+def debug_ml_shipments_raw():
+    """Debug: ver shipments crudos sin filtro de fecha."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT shipment_id, order_id, status, logistic_type,
+                       cut_time, promised_date, receiver_cp, updated_ts
+                FROM ml_shipments
+                ORDER BY updated_ts DESC
+                LIMIT 20
+            """)
+            rows = cur.fetchall()
+    return [
+        {
+            "shipment_id":   r[0],
+            "order_id":      r[1],
+            "status":        r[2],
+            "logistic_type": r[3],
+            "cut_time":      r[4].isoformat() if r[4] else None,
+            "promised_date": r[5].isoformat() if r[5] else None,
+            "receiver_cp":   r[6],
+            "updated_ts":    r[7].isoformat(),
+        }
+        for r in rows
+    ]
+
 @app.get("/api/debug/ml")
 def debug_ml():
     """Debug: estado de integración ML."""
