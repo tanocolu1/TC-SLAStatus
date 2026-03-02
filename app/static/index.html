@@ -681,6 +681,32 @@
     .cutoff-progress-label { font-size: 11px; display: flex; gap: 4px; }
     body.tv-mode .cutoff-progress { height: 3px; margin: 3px 0 2px; }
     body.tv-mode .cutoff-progress-label { font-size: clamp(8px, 0.7vw, 11px); }
+
+    .proxima-colecta-bar {
+      background: linear-gradient(90deg, rgba(88,166,255,.08), rgba(88,166,255,.03));
+      border: 1px solid rgba(88,166,255,.2);
+      border-radius: 10px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 4px;
+    }
+    .proxima-colecta-bar.urgent {
+      background: linear-gradient(90deg, rgba(214,69,69,.12), rgba(214,69,69,.05));
+      border-color: rgba(214,69,69,.4);
+    }
+    .proxima-colecta-bar.warning {
+      background: linear-gradient(90deg, rgba(224,168,0,.1), rgba(224,168,0,.04));
+      border-color: rgba(224,168,0,.35);
+    }
+    .proxima-colecta-info { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+    .proxima-colecta-countdown { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+    .proxima-colecta-bar.urgent  .proxima-colecta-countdown { color: #ffb3b3; }
+    .proxima-colecta-bar.warning .proxima-colecta-countdown { color: #ffe8a3; }
+    body.tv-mode .proxima-colecta-bar     { padding: 0.5vh 0.8vw; margin-top: 0.3vh; }
+    body.tv-mode .proxima-colecta-info    { font-size: clamp(10px, 0.9vw, 14px); }
+    body.tv-mode .proxima-colecta-countdown { font-size: clamp(14px, 1.6vw, 24px); }
     .cutoff-time-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .cutoff-count {
       font-size: 12px; font-weight: 700;
@@ -802,6 +828,16 @@
       <div class="cutoffs-wrap" id="cutoffsME"></div>
       <div class="cutoff-section-label" style="margin-top:8px">Cortes por zona</div>
       <div class="cutoffs-wrap" id="cutoffsZonas"></div>
+      <div id="proximaColectaBanner" style="display:none">
+        <div class="cutoff-section-label" style="margin-top:8px">Próxima colecta</div>
+        <div class="proxima-colecta-bar">
+          <div class="proxima-colecta-info">
+            <span id="proximaNombre">—</span>
+            <span class="badge" id="proximaBadge">—</span>
+          </div>
+          <div class="proxima-colecta-countdown" id="proximaCountdown">—</div>
+        </div>
+      </div>
     </div>
 
     <div class="tv-main-area">
@@ -824,13 +860,13 @@
         <div class="kpi-sub muted">Puestos + "Embalado"</div>
       </div>
 
-      <div class="card" id="cardProximaColecta">
+      <div class="card">
         <div class="kpi-label">
-          <div>Próxima colecta</div>
-          <div class="badge" id="badgeColecta">—</div>
+          <div>Listos p/ despachar</div>
+          <div class="badge" id="badgeShip">—</div>
         </div>
-        <div class="kpi-value" id="kpiProximaColecta">—</div>
-        <div class="kpi-sub muted" id="kpiProximaColectaSub">—</div>
+        <div class="kpi-value" id="kpiShip">—</div>
+        <div class="kpi-sub muted">Asignados a logística</div>
       </div>
 
       <div class="card">
@@ -1300,6 +1336,7 @@
 
       $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
       $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
+      $("kpiShip").textContent         = (m.en_despacho      ?? 0).toLocaleString("es-AR");
       $("kpiShippedToday").textContent = (m.despachados_hoy  ?? 0).toLocaleString("es-AR");
       $("kpiLate").textContent         = (m.atrasados_24h    ?? 0).toLocaleString("es-AR");
       $("kpiAvg").textContent          = (m.avg_age_min      ?? 0).toFixed(1);
@@ -1308,6 +1345,8 @@
                (m.en_preparacion ?? 0) > 0 ? "En cola"   : "OK");
       setBadge($("badgePack"), (m.embalados      ?? 0) > 0 ? "warn" : "good",
                (m.embalados      ?? 0) > 0 ? "Pendientes" : "OK");
+      setBadge($("badgeShip"), (m.en_despacho ?? 0) > 0 ? "warn" : "good",
+               (m.en_despacho ?? 0) > 0 ? "Pendientes" : "OK");
       const bl = badgeForLate(m.atrasados_24h ?? 0);
       setBadge($("badgeLate"), bl.cls, bl.text);
       updateFlowChart(m);
@@ -1432,39 +1471,38 @@
     let cutoffInterval = null;
 
     function updateProximaColecta(d) {
-      // Buscar la próxima colecta pendiente (ME o zona)
+      const banner = $('proximaColectaBanner');
       const all = [
         ...(d.mercadoenvios || []).map(c => ({...c, tipo: 'ME', label: c.nombre})),
         ...(d.zonas || []).map(z => ({...z, tipo: 'Flex', label: z.zona})),
       ].filter(c => c.status !== 'passed' && c.mins_to_corte >= 0)
        .sort((a, b) => a.mins_to_corte - b.mins_to_corte);
 
-      const kpi    = $('kpiProximaColecta');
-      const sub    = $('kpiProximaColectaSub');
-      const badge  = $('badgeColecta');
-
       if (!all.length) {
-        kpi.textContent   = 'Sin cortes';
-        sub.textContent   = 'Todos los cortes de hoy pasaron';
-        setBadge(badge, 'good', 'OK');
+        banner.style.display = 'none';
         return;
       }
 
-      const next = all[0];
-      const h    = Math.floor(next.mins_to_corte / 60);
-      const m    = next.mins_to_corte % 60;
+      const next    = all[0];
+      const h       = Math.floor(next.mins_to_corte / 60);
+      const m       = next.mins_to_corte % 60;
       const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+      const bar     = banner.querySelector('.proxima-colecta-bar');
 
-      kpi.textContent  = timeStr;
-      sub.textContent  = `${next.label} · corte ${next.corte}`;
+      $('proximaNombre').textContent    = `${next.label} · corte ${next.corte}`;
+      $('proximaCountdown').textContent = timeStr;
 
+      bar.className = 'proxima-colecta-bar';
       if (next.mins_to_corte <= 30) {
-        setBadge(badge, 'bad', '⚡ Urgente');
+        bar.classList.add('urgent');
+        setBadge($('proximaBadge'), 'bad', '⚡ Urgente');
       } else if (next.mins_to_corte <= 60) {
-        setBadge(badge, 'warn', '⏰ Pronto');
+        bar.classList.add('warning');
+        setBadge($('proximaBadge'), 'warn', '⏰ Pronto');
       } else {
-        setBadge(badge, 'good', next.tipo);
+        setBadge($('proximaBadge'), 'good', next.tipo);
       }
+      banner.style.display = '';
     }
 
     async function refreshCutoffs() {
