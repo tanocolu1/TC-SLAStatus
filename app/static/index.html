@@ -422,7 +422,7 @@
 
     /* Main — columna izquierda fila 3: KPIs + flujo + tops */
     body.tv-mode .grid-kpi {
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 0.5vw;
       margin: 0;
       min-width: 0;
@@ -816,11 +816,20 @@
 
       <div class="card">
         <div class="kpi-label">
-          <div>En despacho</div>
+          <div>Esperando retiro</div>
           <div class="badge" id="badgeShip">—</div>
         </div>
         <div class="kpi-value" id="kpiShip">—</div>
-        <div class="kpi-sub muted">Transportes / Pickup</div>
+        <div class="kpi-sub muted">Listos, ML no retiró aún</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">
+          <div>Retirados hoy</div>
+          <div class="badge good">ML</div>
+        </div>
+        <div class="kpi-value" id="kpiRetirados">—</div>
+        <div class="kpi-sub muted">Shipments shipped hoy</div>
       </div>
 
       <div class="card">
@@ -834,11 +843,11 @@
 
       <div class="card">
         <div class="kpi-label">
-          <div>Atrasados +24h</div>
+          <div>Atrasados</div>
           <div class="badge" id="badgeLate">—</div>
         </div>
         <div class="kpi-value" id="kpiLate">—</div>
-        <div class="kpi-sub muted">Edad promedio: <span id="kpiAvg">—</span> min</div>
+        <div class="kpi-sub muted">Cut time ML ya pasó · avg <span id="kpiAvg">—</span> min</div>
       </div>
     </div>
 
@@ -1287,7 +1296,8 @@
 
       $("kpiPrep").textContent         = (m.en_preparacion  ?? 0).toLocaleString("es-AR");
       $("kpiPack").textContent         = (m.embalados        ?? 0).toLocaleString("es-AR");
-      $("kpiShip").textContent         = (m.en_despacho      ?? 0).toLocaleString("es-AR");
+      $("kpiShip").textContent         = (m.esperando_retiro ?? m.en_despacho ?? 0).toLocaleString("es-AR");
+      $("kpiRetirados").textContent    = (m.retirados_hoy    ?? 0).toLocaleString("es-AR");
       $("kpiShippedToday").textContent = (m.despachados_hoy  ?? 0).toLocaleString("es-AR");
       $("kpiLate").textContent         = (m.atrasados_24h    ?? 0).toLocaleString("es-AR");
       $("kpiAvg").textContent          = (m.avg_age_min      ?? 0).toFixed(1);
@@ -1296,8 +1306,9 @@
                (m.en_preparacion ?? 0) > 0 ? "En cola"   : "OK");
       setBadge($("badgePack"), (m.embalados      ?? 0) > 0 ? "warn" : "good",
                (m.embalados      ?? 0) > 0 ? "Pendientes" : "OK");
-      setBadge($("badgeShip"), (m.en_despacho    ?? 0) > 0 ? "warn" : "good",
-               (m.en_despacho    ?? 0) > 0 ? "Pendientes" : "OK");
+      const shipVal = m.esperando_retiro ?? m.en_despacho ?? 0;
+      setBadge($("badgeShip"), shipVal > 0 ? "warn" : "good",
+               shipVal > 0 ? "Pendientes" : "OK");
       const bl = badgeForLate(m.atrasados_24h ?? 0);
       setBadge($("badgeLate"), bl.cls, bl.text);
       updateFlowChart(m);

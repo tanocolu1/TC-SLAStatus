@@ -241,8 +241,10 @@ def _ensure_schema() -> None:
                   embalados       INT NOT NULL,
                   en_despacho     INT NOT NULL,
                   despachados_hoy INT NOT NULL,
-                  atrasados_24h   INT NOT NULL,
-                  avg_age_min     DOUBLE PRECISION NOT NULL
+                  atrasados_24h        INT NOT NULL,
+                  avg_age_min          DOUBLE PRECISION NOT NULL,
+                  esperando_retiro     INT NOT NULL DEFAULT 0,
+                  retirados_hoy        INT NOT NULL DEFAULT 0
                 );
             """)
             # Índices
@@ -291,6 +293,20 @@ def _ensure_schema() -> None:
                     WHERE table_name = 'orders_meta' AND column_name = 'delivery_method'
                   ) THEN
                     ALTER TABLE orders_meta ADD COLUMN delivery_method TEXT NULL;
+                  END IF;
+                END $$;
+            """)
+            # Migrar: agregar columnas nuevas a orders_kpi_snapshot
+            cur.execute("""
+                DO $$
+                BEGIN
+                  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders_kpi_snapshot' AND column_name='esperando_retiro') THEN
+                    ALTER TABLE orders_kpi_snapshot ADD COLUMN esperando_retiro INT NOT NULL DEFAULT 0;
+                  END IF;
+                  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders_kpi_snapshot' AND column_name='retirados_hoy') THEN
+                    ALTER TABLE orders_kpi_snapshot ADD COLUMN retirados_hoy INT NOT NULL DEFAULT 0;
                   END IF;
                 END $$;
             """)
@@ -607,22 +623,14 @@ def _run_sync() -> dict:
     now         = datetime.now(timezone.utc)
     now_local   = datetime.now(LOCAL_TZ)
     today_start = datetime(now_local.year, now_local.month, now_local.day, tzinfo=LOCAL_TZ)
-    late_cutoff = now - timedelta(hours=24)
-
     kpi_sql = """
     WITH current_active AS (
-      -- Usar orders_current directamente: refleja el estado real de cada pedido hoy
-      SELECT
-        oc.order_id,
-        oc.status,
-        oc.updated_ts AS event_ts
+      SELECT oc.order_id, oc.status, oc.updated_ts AS event_ts
       FROM orders_current oc
       WHERE oc.status <> ALL(%(excluidos)s)
     ),
     bucketed AS (
-      SELECT
-        order_id,
-        event_ts,
+      SELECT order_id, event_ts,
         CASE
           WHEN status = ANY(%(nuevos)s) THEN 'NUEVOS'
           WHEN status = ANY(%(recep)s)  THEN 'RECEPCION'
@@ -645,31 +653,44 @@ def _run_sync() -> dict:
        WHERE status = ANY(%(env)s)
          AND status <> ALL(%(excluidos)s)
          AND event_ts::timestamptz >= %(today_start)s)                 AS despachados_hoy,
-      (SELECT COUNT(*) FROM orders_current
-       WHERE status = ANY(%(prep_all)s)
-         AND status <> ALL(%(excluidos)s)
-         AND COALESCE(status_since, updated_ts) < %(late_cutoff)s)     AS atrasados_24h,
+      -- Atrasados: pedidos en prep/embalado cuyo cut_time ML ya pasó
+      (SELECT COUNT(*) FROM orders_current oc
+       JOIN orders_meta om ON om.order_id = oc.order_id
+       JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
+       WHERE oc.status = ANY(%(prep_pack)s)
+         AND oc.status <> ALL(%(excluidos)s)
+         AND ms.cut_time < NOW()
+         AND ms.status NOT IN ('cancelled','delivered','not_delivered'))  AS atrasados_24h,
       (SELECT COALESCE(
-         AVG(EXTRACT(EPOCH FROM (NOW() - COALESCE(oc2.status_since, oc2.updated_ts))) / 60.0), 0
-       ) FROM orders_current oc2
+         AVG(EXTRACT(EPOCH FROM (NOW() - COALESCE(oc2.status_since, oc2.updated_ts))) / 60.0), 0)
+       FROM orders_current oc2
        WHERE oc2.status = ANY(%(prep_all)s)
-         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min
+         AND oc2.status <> ALL(%(excluidos)s))                         AS avg_age_min,
+      -- Esperando retiro: en despacho con shipment ML ready_to_ship
+      (SELECT COUNT(*) FROM orders_current oc
+       JOIN orders_meta om ON om.order_id = oc.order_id
+       JOIN ml_shipments ms ON ms.ml_order_id = om.ml_order_id
+       WHERE oc.status = ANY(%(desp)s)
+         AND ms.status = 'ready_to_ship')                              AS esperando_retiro,
+      -- Retirados hoy: shipments que pasaron a shipped hoy
+      (SELECT COUNT(*) FROM ml_shipments
+       WHERE status = 'shipped'
+         AND last_updated::timestamptz >= %(today_start)s)             AS retirados_hoy
     """
 
     kpi_params = {
-        "nuevos":         STATUS_MAP["NUEVOS"],
-        "recep":          STATUS_MAP["RECEPCION"],
-        "prep":           STATUS_MAP["PREPARACION"],
-        "pack":           STATUS_MAP["EMBALADO"],
-        "desp":           STATUS_MAP["DESPACHO"],
-        "env":            STATUS_MAP["ENVIADO"],
-        "ent":            STATUS_MAP["ENTREGADO"],
-        "cerr":           STATUS_MAP["CERRADOS"],
-        "excluidos":      EXCLUDED_STATUSES or ["__never__"],
-        "active_buckets": ACTIVE_BUCKETS,
-        "prep_all":       STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"],
-        "late_cutoff":    late_cutoff,
-        "today_start":    today_start,
+        "nuevos":    STATUS_MAP["NUEVOS"],
+        "recep":     STATUS_MAP["RECEPCION"],
+        "prep":      STATUS_MAP["PREPARACION"],
+        "pack":      STATUS_MAP["EMBALADO"],
+        "desp":      STATUS_MAP["DESPACHO"],
+        "env":       STATUS_MAP["ENVIADO"],
+        "ent":       STATUS_MAP["ENTREGADO"],
+        "cerr":      STATUS_MAP["CERRADOS"],
+        "excluidos": EXCLUDED_STATUSES or ["__never__"],
+        "prep_all":  STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"],
+        "prep_pack": STATUS_MAP["PREPARACION"] + STATUS_MAP["NUEVOS"] + STATUS_MAP["RECEPCION"] + STATUS_MAP["EMBALADO"],
+        "today_start": today_start,
     }
 
     try:
@@ -677,12 +698,12 @@ def _run_sync() -> dict:
             with conn.cursor() as cur:
                 cur.execute(kpi_sql, kpi_params)
                 kpi = cur.fetchone()
-                cur.execute(
-                    """
+                cur.execute("""
                     INSERT INTO orders_kpi_snapshot(
                       snapshot_ts, en_preparacion, embalados, en_despacho,
-                      despachados_hoy, atrasados_24h, avg_age_min
-                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s)
+                      despachados_hoy, atrasados_24h, avg_age_min,
+                      esperando_retiro, retirados_hoy
+                    ) VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     kpi,
                 )
@@ -989,7 +1010,8 @@ def metrics():
             cur.execute(
                 """
                 SELECT en_preparacion, embalados, en_despacho,
-                       despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts
+                       despachados_hoy, atrasados_24h, avg_age_min, snapshot_ts,
+                       COALESCE(esperando_retiro, 0), COALESCE(retirados_hoy, 0)
                 FROM orders_kpi_snapshot
                 ORDER BY id DESC
                 LIMIT 1
@@ -1007,14 +1029,16 @@ def metrics():
         })
 
     return JSONResponse({
-        "en_preparacion":  int(row[0] or 0),
-        "embalados":       int(row[1] or 0),
-        "en_despacho":     int(row[2] or 0),
-        "despachados_hoy": int(row[3] or 0),
-        "atrasados_24h":   int(row[4] or 0),
-        "avg_age_min":     float(row[5] or 0.0),
-        "refresh_seconds": REFRESH_SECONDS,
-        "server_time_utc": row[6].isoformat(),
+        "en_preparacion":   int(row[0] or 0),
+        "embalados":        int(row[1] or 0),
+        "en_despacho":      int(row[2] or 0),
+        "despachados_hoy":  int(row[3] or 0),
+        "atrasados_24h":    int(row[4] or 0),
+        "avg_age_min":      float(row[5] or 0.0),
+        "refresh_seconds":  REFRESH_SECONDS,
+        "server_time_utc":  row[6].isoformat(),
+        "esperando_retiro": int(row[7] or 0) if len(row) > 7 else 0,
+        "retirados_hoy":    int(row[8] or 0) if len(row) > 8 else 0,
     })
 
 
