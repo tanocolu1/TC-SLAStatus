@@ -2593,6 +2593,8 @@ def debug_ml():
 # FRONT
 # ===============================
 
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTMLResponse(content=_render_index_html(), status_code=200)
@@ -2600,5 +2602,3 @@ def home():
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     return HTMLResponse(content=_render_index_html(), status_code=200)
-
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
