@@ -1472,12 +1472,23 @@
 
 
     // -- Horarios de corte ------------------------------------------------------
-    function fmtMinsToCorte(mins) {
+    function fmtMinsToCorte(mins, corteHora) {
       if (mins < 0) return 'Pasado';
       if (mins === 0) return '¡Ahora!';
       if (mins < 60) return 'en ' + mins + ' min';
-      const h = Math.floor(mins / 60), m = mins % 60;
-      return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+      if (mins < 180) {
+        const h = Math.floor(mins / 60), m = mins % 60;
+        return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+      }
+      // Más de 3hs — mostrar "hoy HH:MM", "mañana HH:MM", etc.
+      if (!corteHora) {
+        const h = Math.floor(mins / 60), m = mins % 60;
+        return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+      }
+      const dias = Math.floor(mins / 60 / 24);
+      if (dias === 0) return 'hoy ' + corteHora;
+      if (dias === 1) return 'mañana ' + corteHora;
+      return 'en ' + dias + ' días ' + corteHora;
     }
 
     function renderCutoffCard(item, tipo) {
@@ -1493,7 +1504,7 @@
       }
       const countdown = item.status === 'passed'
         ? 'Ya pasó'
-        : fmtMinsToCorte(item.mins_to_corte);
+        : fmtMinsToCorte(item.mins_to_corte, item.corte);
 
       // Progreso despacho
       const total    = item.total_hoy || 0;
@@ -1543,9 +1554,7 @@
       }
 
       const next    = all[0];
-      const h       = Math.floor(next.mins_to_corte / 60);
-      const m       = next.mins_to_corte % 60;
-      const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+      const timeStr = fmtMinsToCorte(next.mins_to_corte, next.corte);
       const bar     = banner.querySelector('.proxima-colecta-bar');
 
       $('proximaNombre').textContent    = `${next.label} · corte ${next.corte}`;
