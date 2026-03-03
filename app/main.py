@@ -2591,4 +2591,9 @@ async def home():
     html = await asyncio.to_thread(_render_index_html)
     return html
 
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    html = await asyncio.to_thread(_render_index_html)
+    return html
+
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
