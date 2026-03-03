@@ -673,6 +673,13 @@
 
 
 
+    .cutoff-accounts { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 2px; }
+    .cutoff-account-tag {
+      font-size: 10px; padding: 1px 6px; border-radius: 10px;
+      background: rgba(88,166,255,.15); color: #58a6ff;
+      border: 1px solid rgba(88,166,255,.25);
+    }
+    body.tv-mode .cutoff-account-tag { font-size: clamp(8px, 0.6vw, 10px); }
     .cutoff-progress {
       height: 4px; background: rgba(255,255,255,.08);
       border-radius: 2px; margin: 5px 0 3px; overflow: hidden;
@@ -1490,6 +1497,10 @@
       const pct      = total > 0 ? Math.round((desp / total) * 100) : 0;
       const progColor = pct === 100 ? '#3fb950' : pct >= 50 ? '#e3b341' : '#f85149';
 
+      const accountTags = (item.accounts || []).length
+        ? `<div class="cutoff-accounts">${(item.accounts).map(a => `<span class="cutoff-account-tag">${escapeHtml(a)}</span>`).join('')}</div>`
+        : '';
+
       const progressBar = total > 0 ? `
         <div class="cutoff-progress">
           <div class="cutoff-progress-bar" style="width:${pct}%;background:${progColor}"></div>
@@ -1506,6 +1517,7 @@
           <span class="cutoff-countdown">${countdown}</span>
         </div>
         <div class="cutoff-detail">${detail}</div>
+        ${accountTags}
         ${progressBar}
       </div>`;
     }

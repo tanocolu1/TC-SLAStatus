@@ -1855,31 +1855,36 @@ def cutoffs(account: str | None = None):
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
-                        logistic_type,
-                        cut_time,
-                        receiver_cp,
-                        COUNT(*)::int
-                    FROM ml_shipments
-                    WHERE status IN ('ready_to_ship', 'pending')
-                      AND cut_time IS NOT NULL
-                      AND cut_time >= %s AND cut_time < %s
-                    GROUP BY logistic_type, cut_time, receiver_cp
+                        ms.logistic_type,
+                        ms.cut_time,
+                        ms.receiver_cp,
+                        COUNT(*)::int,
+                        array_agg(DISTINCT mt.nickname) FILTER (WHERE mt.nickname IS NOT NULL)
+                    FROM ml_shipments ms
+                    LEFT JOIN orders_meta om ON om.ml_order_id = ms.ml_order_id
+                    LEFT JOIN ml_tokens mt ON mt.account_id = om.ml_account_id
+                    WHERE ms.status IN ('ready_to_ship', 'pending')
+                      AND ms.cut_time IS NOT NULL
+                      AND ms.cut_time >= %s AND ms.cut_time < %s
+                    GROUP BY ms.logistic_type, ms.cut_time, ms.receiver_cp
                 """, (today_utc, tomorrow_utc + timedelta(days=1)))
                 rows = cur.fetchall()
 
-        # Agrupar por tipo
         me_count = 0
         caba_count = 0
         gba_count = 0
-        cut_groups = {}  # cut_time_iso -> count (para colectas ME)
+        cut_groups = {}  # cut_time_iso -> {count, accounts}
 
-        for logistic_type, cut_time_val, cp, cnt in rows:
+        for logistic_type, cut_time_val, cp, cnt, accounts in rows:
+            accs = accounts or []
             if logistic_type == "cross_docking":
                 me_count += cnt
                 cut_key = cut_time_val.isoformat() if cut_time_val else "unknown"
-                cut_groups[cut_key] = cut_groups.get(cut_key, 0) + cnt
+                if cut_key not in cut_groups:
+                    cut_groups[cut_key] = {"count": 0, "accounts": set()}
+                cut_groups[cut_key]["count"] += cnt
+                cut_groups[cut_key]["accounts"].update(accs)
             else:
-                # self_service = Flex, separar por CP
                 try:
                     cp_num = int((cp or "")[:4])
                     if 1000 <= cp_num <= 1499:
@@ -1888,6 +1893,10 @@ def cutoffs(account: str | None = None):
                         gba_count += cnt
                 except Exception:
                     gba_count += cnt
+
+        # Serializar sets a listas
+        for k in cut_groups:
+            cut_groups[k]["accounts"] = sorted(cut_groups[k]["accounts"])
 
         counts = {"me": me_count, "caba": caba_count, "gba": gba_count,
                   "cut_groups": cut_groups}
@@ -1899,7 +1908,7 @@ def cutoffs(account: str | None = None):
 
     # ── Mercado Envíos colectas — dinámicas desde cut_time de ML ─────────────
     # Agrupar shipments cross_docking por cut_time único del día y mañana
-    for cut_utc_iso, cnt in sorted(counts.get("cut_groups", {}).items()):
+    for cut_utc_iso, cut_data in sorted(counts.get("cut_groups", {}).items()):
         try:
             cut_utc = datetime.fromisoformat(cut_utc_iso)
             cut_local = cut_utc.astimezone(LOCAL_TZ)
@@ -1921,6 +1930,10 @@ def cutoffs(account: str | None = None):
         else:
             dias = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
             dia_label = dias[cut_local.weekday()]
+
+        cut_data = counts["cut_groups"].get(cut_utc_iso, {})
+        cnt      = cut_data.get("count", 0)
+        accounts = cut_data.get("accounts", [])
 
         # Cuántos ya se despacharon de este corte
         me_desp = 0
@@ -1948,6 +1961,7 @@ def cutoffs(account: str | None = None):
             "despachados_hoy": me_desp,
             "total_hoy":       cnt + me_desp,
             "dia":             dia_label,
+            "accounts":        accounts,
         })
 
     # Fallback: si no hay shipments ML, usar config manual
