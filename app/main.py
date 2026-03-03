@@ -159,8 +159,9 @@ def _render_index_html():
 # ===============================
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Inicializar schema en thread para no bloquear el event loop
     try:
-        _ensure_schema()
+        await asyncio.to_thread(_ensure_schema)
     except Exception as exc:
         logger.error("Error al inicializar el schema: %s", exc)
         raise
@@ -184,6 +185,8 @@ async def lifespan(_app: FastAPI):
 async def _auto_sync_loop() -> None:
     """Llama a _run_sync() cada AUTO_SYNC_EVERY segundos en background."""
     logger.info("Auto-sync arrancado: cada %d segundos.", AUTO_SYNC_EVERY)
+    # Esperar 10s para que la app esté lista antes del primer sync
+    await asyncio.sleep(10)
     try:
         result = await asyncio.to_thread(_run_sync)
         logger.info("Auto-sync inicial OK: %s", result)
