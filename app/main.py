@@ -538,7 +538,13 @@ def _run_sync() -> dict:
                 dis = o.get("date_in_status")
                 date_in_status = datetime.fromtimestamp(int(dis), tz=timezone.utc) if dis else None
 
-                meta_rows.append((order_id, date_confirmed, date_add))
+                delivery_postcode = (o.get("delivery_postcode") or "").strip() or None
+                delivery_method   = (o.get("delivery_method") or "").strip() or None
+                ml_order_id       = (o.get("extra_field_1") or "").strip() or None
+                order_source_id   = str(o.get("order_source_id", "") or "")
+                ml_account_id     = BL_ML_ACCOUNT_MAP.get(order_source_id)
+
+                meta_rows.append((order_id, date_confirmed, date_add, delivery_postcode, delivery_method, ml_order_id, order_source_id, ml_account_id))
                 user_login = (o.get("user_login") or "").strip() or None
                 current_rows.append((order_id, status_name, date_in_status))
 
@@ -578,13 +584,16 @@ def _run_sync() -> dict:
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
-                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, delivery_postcode, delivery_method, updated_ts)
-                        VALUES (%s, %s, %s, %s, %s, NOW())
+                        INSERT INTO orders_meta(order_id, date_confirmed, date_add, delivery_postcode, delivery_method, ml_order_id, order_source_id, ml_account_id, updated_ts)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT(order_id) DO UPDATE
                         SET date_confirmed    = EXCLUDED.date_confirmed,
                             date_add          = EXCLUDED.date_add,
                             delivery_postcode = EXCLUDED.delivery_postcode,
                             delivery_method   = EXCLUDED.delivery_method,
+                            ml_order_id       = COALESCE(EXCLUDED.ml_order_id, orders_meta.ml_order_id),
+                            order_source_id   = COALESCE(EXCLUDED.order_source_id, orders_meta.order_source_id),
+                            ml_account_id     = COALESCE(EXCLUDED.ml_account_id, orders_meta.ml_account_id),
                             updated_ts        = EXCLUDED.updated_ts
                         """,
                         meta_rows,
