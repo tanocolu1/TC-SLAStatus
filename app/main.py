@@ -165,6 +165,13 @@ async def lifespan(_app: FastAPI):
         logger.error("Error al inicializar el schema: %s", exc)
         raise
 
+    # Precargar HTML en memoria
+    try:
+        _load_index_html_raw()
+        logger.info("HTML precargado OK (%d bytes)", len(_INDEX_HTML_CACHE))
+    except Exception as exc:
+        logger.error("Error precargando HTML: %s", exc)
+
     task = asyncio.create_task(_auto_sync_loop())
     yield
     task.cancel()
@@ -2587,13 +2594,11 @@ def debug_ml():
 # ===============================
 
 @app.get("/", response_class=HTMLResponse)
-async def home():
-    html = await asyncio.to_thread(_render_index_html)
-    return html
+def home():
+    return HTMLResponse(content=_render_index_html(), status_code=200)
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    html = await asyncio.to_thread(_render_index_html)
-    return html
+def dashboard():
+    return HTMLResponse(content=_render_index_html(), status_code=200)
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
