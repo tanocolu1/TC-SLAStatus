@@ -1477,15 +1477,13 @@
         const h = Math.floor(mins / 60), m = mins % 60;
         return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
       }
-      // Más de 3hs — mostrar "hoy HH:MM", "mañana HH:MM", etc.
-      if (!corteHora) {
-        const h = Math.floor(mins / 60), m = mins % 60;
-        return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
-      }
+      // Más de 3hs — mostrar tiempo restante solamente
+      const h = Math.floor(mins / 60), m = mins % 60;
+      if (mins < 24 * 60) return 'en ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+      // Más de 24hs
       const dias = Math.floor(mins / 60 / 24);
-      if (dias === 0) return 'hoy ' + corteHora;
-      if (dias === 1) return 'mañana ' + corteHora;
-      return 'en ' + dias + ' días ' + corteHora;
+      if (dias === 1) return 'mañana';
+      return 'en ' + dias + ' días';
     }
 
     function renderCutoffCard(item, tipo) {

@@ -1945,6 +1945,9 @@ def cutoffs(account: str | None = None):
             continue
 
         corte_str     = cut_local.strftime("%H:%M")
+        # Filtrar cut_time 00:00 — son datos inválidos de ML
+        if corte_str == "00:00":
+            continue
         # mins_to_corte: si es mañana, sumar 24hs
         mins_to_corte = mins_until(corte_str)
         if cut_date > today_date:
