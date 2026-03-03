@@ -410,11 +410,11 @@
       margin: 0;
       flex-wrap: nowrap;
     }
-    body.tv-mode .cutoff-card    { padding: 0.4vh 0.6vw; min-width: 0; flex: none; }
-    body.tv-mode .cutoff-name    { font-size: clamp(9px, 0.75vw, 11px); }
-    body.tv-mode .cutoff-time    { font-size: clamp(18px, 2.2vw, 32px); }
-    body.tv-mode .cutoff-detail  { font-size: clamp(8px, 0.7vw, 10px); }
-    body.tv-mode .cutoff-countdown { font-size: clamp(9px, 0.85vw, 13px); margin-top: 1px; }
+    body.tv-mode .cutoff-card    { padding: 0.5vh 0.7vw; min-width: 0; flex: none; }
+    body.tv-mode .cutoff-name    { font-size: clamp(9px, 0.8vw, 12px); }
+    body.tv-mode .cutoff-time    { font-size: clamp(16px, 1.8vw, 26px); }
+    body.tv-mode .cutoff-detail  { font-size: clamp(8px, 0.65vw, 10px); }
+    body.tv-mode .cutoff-countdown { font-size: clamp(9px, 0.9vw, 14px); margin-top: 1px; font-weight: 700; }
     /* Cortes por zona más compactos — horizontal */
     body.tv-mode #cutoffsZonas   { flex-direction: row; gap: 0.4vw; }
     body.tv-mode #cutoffsZonas .cutoff-card { flex: 1; }
@@ -793,10 +793,7 @@
       margin-bottom: 6px;
       margin-top: 2px;
     }
-    body.tv-mode .cutoffs-wrap { gap: 0.6vw; margin-bottom: 0.8vh; }
-    body.tv-mode .cutoff-card  { padding: 0.8vh 1vw; min-width: 0; }
-    body.tv-mode .cutoff-name  { font-size: clamp(9px, 0.8vw, 12px); }
-    body.tv-mode .cutoff-time  { font-size: clamp(18px, 2.2vw, 32px); }
+    body.tv-mode .cutoffs-wrap { gap: 0.4vw; margin-bottom: 0.5vh; }
     body.tv-mode .cutoff-detail     { font-size: clamp(9px, 0.8vw, 12px); }
     body.tv-mode .cutoff-countdown  { font-size: clamp(10px, 1vw, 14px); }
     body.tv-mode .cutoff-section-label { font-size: clamp(9px, 0.8vw, 11px); }
@@ -1502,14 +1499,17 @@
       } else {
         detail = `CP ${item.cp_desde}–${item.cp_hasta}`;
       }
-      // Solo mostrar "Ya pasó" si realmente es hoy y pasó
-      // Si el día es futuro (mañana, etc.) mostrar "Pasará HH:MM"
       const isFutureDay = item.dia && item.dia !== 'Hoy' && item.dia !== 'hoy';
-      const countdown = (item.status === 'passed' && !isFutureDay)
-        ? 'Ya pasó'
-        : isFutureDay
-          ? (item.dia + ' ' + item.corte)
-          : fmtMinsToCorte(item.mins_to_corte, item.corte);
+      let countdown;
+      if (isFutureDay) {
+        countdown = item.dia + ' ' + item.corte;
+      } else if (item.status === 'passed') {
+        // Pasó hoy — mostrar mañana para Flex (corte diario fijo)
+        const esFlex = tipo === 'zona';
+        countdown = esFlex ? ('mañana ' + item.corte) : 'Ya pasó';
+      } else {
+        countdown = fmtMinsToCorte(item.mins_to_corte, item.corte);
+      }
 
       // Progreso despacho
       const total    = item.total_hoy || 0;
