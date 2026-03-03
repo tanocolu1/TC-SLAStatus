@@ -1945,8 +1945,9 @@ def cutoffs(account: str | None = None):
             continue
 
         corte_str     = cut_local.strftime("%H:%M")
-        # Filtrar solo cut_time exactamente en 00:00 UTC — son datos inválidos de ML
-        if cut_utc.hour == 0 and cut_utc.minute == 0:
+        # Filtrar colectas a medianoche ART (00:00) — son datos inválidos de ML
+        # 00:00 UTC o 03:00 UTC ambos mapean a medianoche en ART (-3)
+        if corte_str == "00:00":
             continue
         # mins_to_corte: si es mañana, sumar 24hs
         mins_to_corte = mins_until(corte_str)
