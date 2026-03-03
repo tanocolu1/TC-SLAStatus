@@ -2585,9 +2585,9 @@ def debug_ml():
 # ===============================
 # FRONT
 # ===============================
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return _render_index_html()
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
