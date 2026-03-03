@@ -1054,7 +1054,12 @@
     let currentAccount = 'all';
 
     function accountParam() {
-      return (currentAccount && currentAccount !== 'all') ? `&account=${currentAccount}` : '';
+      return (currentAccount && currentAccount !== 'all') ? `account=${currentAccount}` : '';
+    }
+
+    function buildUrl(base, extra) {
+      const params = [extra, accountParam()].filter(Boolean).join('&');
+      return params ? `${base}?${params}` : base;
     }
 
     function setAccount(val) {
@@ -1239,7 +1244,7 @@
         btn.textContent = `✓ ${data.orders_received} pedidos, ${data.changed} cambios`;
 
         // Refrescar KPIs y tops inmediatamente
-        const m = await fetchJson(`/api/metrics?${accountParam()}`);
+        const m = await fetchJson(buildUrl("/api/metrics"));
         lastSuccess = Date.now();
         consecutiveErrors = 0;
         tvHadFirstSuccess = true;
@@ -1408,7 +1413,7 @@
 
       // KPIs
       try {
-        const m = await fetchJson(`/api/metrics?${accountParam()}`);
+        const m = await fetchJson(buildUrl("/api/metrics"));
         lastSuccess = Date.now();
         markStale(false);
         applyMetrics(m);
@@ -1444,7 +1449,7 @@
       await refreshAlerts();
       if (!IS_TV) await Promise.all([refreshProductivity(), refreshStageTimes(), refreshAllAnalytics()]);
       try {
-        const tp = await fetchJson(`/api/top-products?days=7&limit=10${accountParam()}`);
+        const tp = await fetchJson(buildUrl("/api/top-products", "days=7&limit=10"));
         $("topProductsWrap").innerHTML = renderTopProducts(tp);
         $("topProductsMeta").textContent = "Actualizado: " + new Date().toLocaleTimeString("es-AR", { hour12: false });
       } catch (e) {
@@ -1561,7 +1566,7 @@
 
     async function refreshCutoffs() {
       try {
-        const d = await fetchJson(`/api/cutoffs?${accountParam()}`);
+        const d = await fetchJson(buildUrl("/api/cutoffs"));
 
         const meWrap = $('cutoffsME');
         const zonaWrap = $('cutoffsZonas');
@@ -1637,7 +1642,7 @@
 
     async function refreshAlerts() {
       try {
-        const data = await fetchJson(`/api/alerts?${accountParam()}`);
+        const data = await fetchJson(buildUrl("/api/alerts"));
         const banner = $('alertBanner');
         if (data.count > 0) {
           banner.classList.add('visible');
@@ -1989,7 +1994,7 @@
     // Primer render inmediato (incluyendo tops), luego arranca el loop
     (async () => {
       try {
-        const m = await fetchJson(`/api/metrics?${accountParam()}`);
+        const m = await fetchJson(buildUrl("/api/metrics"));
         lastSuccess = Date.now();
         tvHadFirstSuccess = true;
         applyMetrics(m);
