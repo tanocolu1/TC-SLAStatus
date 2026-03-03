@@ -1945,7 +1945,10 @@ def cutoffs(account: str | None = None):
             continue
 
         corte_str     = cut_local.strftime("%H:%M")
+        # mins_to_corte: si es mañana, sumar 24hs
         mins_to_corte = mins_until(corte_str)
+        if cut_date > today_date:
+            mins_to_corte += 24 * 60 * (cut_date - today_date).days
 
         # Etiqueta del día
         if cut_date == today_date:

@@ -836,7 +836,7 @@
     <div id="cutoffsSection">
       <div class="cutoff-section-label">Mercado Envíos — Colectas de hoy</div>
       <div class="cutoffs-wrap" id="cutoffsME"></div>
-      <div class="cutoff-section-label" style="margin-top:8px">Cortes por zona</div>
+      <div class="cutoff-section-label" style="margin-top:8px">Flex</div>
       <div class="cutoffs-wrap" id="cutoffsZonas"></div>
       <div id="proximaColectaBanner" style="display:none">
         <div class="cutoff-section-label" style="margin-top:8px">Próxima colecta</div>
@@ -1502,9 +1502,14 @@
       } else {
         detail = `CP ${item.cp_desde}–${item.cp_hasta}`;
       }
-      const countdown = item.status === 'passed'
+      // Solo mostrar "Ya pasó" si realmente es hoy y pasó
+      // Si el día es futuro (mañana, etc.) mostrar "Pasará HH:MM"
+      const isFutureDay = item.dia && item.dia !== 'Hoy' && item.dia !== 'hoy';
+      const countdown = (item.status === 'passed' && !isFutureDay)
         ? 'Ya pasó'
-        : fmtMinsToCorte(item.mins_to_corte, item.corte);
+        : isFutureDay
+          ? (item.dia + ' ' + item.corte)
+          : fmtMinsToCorte(item.mins_to_corte, item.corte);
 
       // Progreso despacho
       const total    = item.total_hoy || 0;
