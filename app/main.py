@@ -2588,6 +2588,7 @@ def debug_ml():
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return _render_index_html()
+    html = await asyncio.to_thread(_render_index_html)
+    return html
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

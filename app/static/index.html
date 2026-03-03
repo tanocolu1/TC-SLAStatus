@@ -193,7 +193,7 @@
       transition: width .9s linear;
     }
 
-    /* ── Gráfico de flujo ── */
+    /* -- Gráfico de flujo -- */
     .card-flow{
       margin: 0 0 12px;
     }
@@ -263,7 +263,7 @@
       .flow-row{ grid-template-columns: 100px 1fr 48px; }
     }
 
-    /* ── Pedidos pendientes ─────────────────────────────────── */
+    /* -- Pedidos pendientes ----------------------------------- */
     .pending-filters {
       display: flex;
       gap: 8px;
@@ -348,7 +348,7 @@
     .card-wide { grid-column: 1 / -1; }
 
 
-    /* ── Modo TV (?modo=tv) — layout 2 columnas ────────────── */
+    /* -- Modo TV (?modo=tv) — layout 2 columnas -------------- */
     body.tv-mode {
       overflow: hidden;
       height: 100vh;
@@ -490,7 +490,7 @@
     }
     .tv-link:hover { color: var(--text); border-color: rgba(255,255,255,.2); }
 
-    /* ── Alertas ─────────────────────────────────────────────── */
+    /* -- Alertas ----------------------------------------------- */
     .alert-banner {
       display: none;
       align-items: center;
@@ -529,7 +529,7 @@
     .alert-detail tr:last-child td { border-bottom: none; }
     .alert-mins { color: #ffb3b3; font-weight: 700; }
 
-    /* ── Productividad y tiempos ────────────────────────────── */
+    /* -- Productividad y tiempos ------------------------------ */
     .grid-analytics {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -586,7 +586,7 @@
     body.tv-mode .grid-analytics { display: none; }
 
 
-    /* ── Analytics avanzados ────────────────────────────────── */
+    /* -- Analytics avanzados ---------------------------------- */
     .grid-analytics-2 {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
@@ -726,7 +726,7 @@
     .cutoff-count.neutral { background: rgba(255,255,255,.04); color: var(--muted); font-weight: 400; }
     body.tv-mode .cutoff-count { font-size: clamp(9px, 0.85vw, 13px); padding: 1px 5px; }
     body.tv-mode .cutoff-time-row { gap: 4px; }
-    /* ── Horarios de corte ───────────────────────────────────── */
+    /* -- Horarios de corte ------------------------------------- */
     .cutoffs-wrap {
       display: flex;
       gap: 10px;
@@ -829,7 +829,7 @@
         <div class="alert-title" id="alertTitle">—</div>
         <div class="alert-sub" id="alertSub">—</div>
       </div>
-      <div class="alert-expand" id="alertExpand">▼ Ver detalle</div>
+      <div class="alert-expand" id="alertExpand">v Ver detalle</div>
     </div>
     <div class="alert-detail" id="alertDetail"></div>
 
@@ -1041,7 +1041,7 @@
 
   <script>
 
-    // ── Modo TV ───────────────────────────────────────────────────────────────
+    // -- Modo TV ---------------------------------------------------------------
     const IS_TV = new URLSearchParams(location.search).get('modo') === 'tv';
     if (IS_TV) {
       document.body.classList.add('tv-mode');
@@ -1050,7 +1050,7 @@
       if (tvLink) { tvLink.textContent = '⊞ Normal'; tvLink.href = '/'; }
     }
 
-    // ── Filtro por cuenta ─────────────────────────────────────────────────────
+    // -- Filtro por cuenta -----------------------------------------------------
     let currentAccount = 'all';
 
     function accountParam() {
@@ -1089,7 +1089,7 @@
       } catch(e) { console.warn('accounts load error', e); }
     }
 
-    // ─── Utilidades ────────────────────────────────────────────────────────────
+    // --- Utilidades ------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
 
@@ -1133,7 +1133,7 @@
       }
     }
 
-    // ─── Renderers ─────────────────────────────────────────────────────────────
+    // --- Renderers -------------------------------------------------------------
 
     function renderTopProducts(items) {
       if (!items || items.length === 0) {
@@ -1220,7 +1220,7 @@
         </table>`;
     }
 
-    // ─── Sync manual ───────────────────────────────────────────────────────────
+    // --- Sync manual -----------------------------------------------------------
     async function forceSync() {
       const btn = $("btnSync");
       btn.disabled = true;
@@ -1264,7 +1264,7 @@
     // Secret inyectado por el servidor — no editar manualmente
     const SYNC_SECRET = "__SYNC_SECRET__";
 
-    // ─── Lógica de refresco ────────────────────────────────────────────────────
+    // --- Lógica de refresco ----------------------------------------------------
     //
     // FIX: antes había DOS setInterval paralelos que llamaban a /api/metrics,
     // uno cada 60 s (refreshAll completo) y otro cada 10 s solo para KPIs,
@@ -1281,7 +1281,7 @@
     let topsCounter   = 0;
     let lastSuccess   = null;  // timestamp del último fetch exitoso
 
-    // ── Loop robusto con auto-reconexión ──────────────────────────────────────
+    // -- Loop robusto con auto-reconexión --------------------------------------
     let consecutiveErrors = 0;
     const MAX_ERRORS = 10;
 
@@ -1292,7 +1292,7 @@
       kpiTimer = setInterval(tick, intervalMs);
     }
 
-    // ── Countdown visual ───────────────────────────────────────────────────────
+    // -- Countdown visual -------------------------------------------------------
     let countdownEnd = 0;
     let countdownTimer = null;
 
@@ -1307,7 +1307,7 @@
       }, 500);
     }
 
-    // ── Stale indicator ────────────────────────────────────────────────────────
+    // -- Stale indicator --------------------------------------------------------
     function markStale(isStale) {
       $("pillServer").classList.toggle("stale", isStale);
       // En TV: mostrar overlay de reconexión si hay muchos errores
@@ -1330,7 +1330,7 @@
       }
     }
 
-    // ── Recarga de página en TV si lleva mucho tiempo sin datos ───────────────
+    // -- Recarga de página en TV si lleva mucho tiempo sin datos ---------------
     let tvReloadTimer = null;
     let tvHadFirstSuccess = false;
     function resetTvReloadTimer() {
@@ -1342,7 +1342,7 @@
       }, 5 * 60 * 1000);
     }
 
-    // ── Gráfico de flujo ───────────────────────────────────────────────────────
+    // -- Gráfico de flujo -------------------------------------------------------
     function updateFlowChart(m) {
       // "A procesar" = en_preparacion + embalados (todo lo que aún no salió)
       const prep  = (m.en_preparacion ?? 0) + (m.embalados ?? 0);
@@ -1369,7 +1369,7 @@
       setBar("flowEnvBar",  "flowEnvPct",  "flowEnvCount",  env,  ` (${despHoy} hoy)`);
     }
 
-    // ── Actualizar KPIs en el DOM ──────────────────────────────────────────────
+    // -- Actualizar KPIs en el DOM ----------------------------------------------
     function applyMetrics(m) {
       // Mostramos la hora local del cliente (prueba que el fetch funcionó)
       // + antigüedad del snapshot para saber si /sync está corriendo.
@@ -1401,7 +1401,7 @@
       updateFlowChart(m);
     }
 
-    // ── Tick principal ─────────────────────────────────────────────────────────
+    // -- Tick principal ---------------------------------------------------------
     async function tick() {
       startCountdown(kpiIntervalMs);
       topsCounter++;
@@ -1466,7 +1466,7 @@
 
 
 
-    // ── Horarios de corte ──────────────────────────────────────────────────────
+    // -- Horarios de corte ------------------------------------------------------
     function fmtMinsToCorte(mins) {
       if (mins < 0) return 'Pasado';
       if (mins === 0) return '¡Ahora!';
@@ -1586,7 +1586,7 @@
       } catch(e) { console.error('cutoffs error', e); }
     }
 
-    // ── Alertas ────────────────────────────────────────────────────────────────
+    // -- Alertas ----------------------------------------------------------------
     let alertOpen = false;
     let alertData = [];
 
@@ -1595,7 +1595,7 @@
       const det = $('alertDetail');
       const exp = $('alertExpand');
       det.classList.toggle('open', alertOpen);
-      exp.textContent = alertOpen ? '▲ Ocultar' : '▼ Ver detalle';
+      exp.textContent = alertOpen ? '^ Ocultar' : 'v Ver detalle';
     }
 
     function urgencyBadge(o) {
@@ -1664,7 +1664,7 @@
       } catch(e) { console.error('alerts error', e); }
     }
 
-    // ── Productividad ──────────────────────────────────────────────────────────
+    // -- Productividad ----------------------------------------------------------
     function fmtDay(dateStr) {
       const d = new Date(dateStr + 'T12:00:00');
       return d.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
@@ -1691,7 +1691,7 @@
       } catch(e) { console.error('productivity error', e); }
     }
 
-    // ── Tiempos por etapa ──────────────────────────────────────────────────────
+    // -- Tiempos por etapa ------------------------------------------------------
     function timePillClass(mins) {
       if (mins < 30)  return 'time-good';
       if (mins < 120) return 'time-warn';
@@ -1727,7 +1727,7 @@
     }
 
 
-    // ── Unidades en preparación ────────────────────────────────────────────────
+    // -- Unidades en preparación ------------------------------------------------
     async function refreshUnitsPrep() {
       try {
         const d = await fetchJson('/api/units-in-prep');
@@ -1737,7 +1737,7 @@
       } catch(e) { console.error('units-in-prep error', e); }
     }
 
-    // ── Velocidad de despacho ──────────────────────────────────────────────────
+    // -- Velocidad de despacho --------------------------------------------------
     async function refreshDispatchRate() {
       try {
         const data = await fetchJson('/api/dispatch-rate');
@@ -1757,7 +1757,7 @@
       } catch(e) { console.error('dispatch-rate error', e); }
     }
 
-    // ── Pedidos sin movimiento ─────────────────────────────────────────────────
+    // -- Pedidos sin movimiento -------------------------------------------------
     async function refreshStalled() {
       try {
         const d = await fetchJson('/api/stalled-orders?hours=4');
@@ -1777,7 +1777,7 @@
       } catch(e) { console.error('stalled-orders error', e); }
     }
 
-    // ── Comparativa semanal ────────────────────────────────────────────────────
+    // -- Comparativa semanal ----------------------------------------------------
     async function refreshWeekly() {
       try {
         const data = await fetchJson('/api/weekly-comparison');
@@ -1798,14 +1798,14 @@
             </div>
           </div>`).join('');
         $('weeklyChart').innerHTML = rows + `<div style="font-size:11px;color:var(--muted);margin-top:6px">
-          <span style="color:#58a6ff">■</span> Esta semana &nbsp;
-          <span style="color:rgba(88,166,255,.4)">■</span> Semana anterior
+          <span style="color:#58a6ff">*</span> Esta semana &nbsp;
+          <span style="color:rgba(88,166,255,.4)">*</span> Semana anterior
         </div>`;
         $('weeklyMeta').textContent = new Date().toLocaleTimeString('es-AR', { hour12: false });
       } catch(e) { console.error('weekly error', e); }
     }
 
-    // ── Hora pico ──────────────────────────────────────────────────────────────
+    // -- Hora pico --------------------------------------------------------------
     async function refreshPeakHours() {
       try {
         const data = await fetchJson('/api/peak-hours?days=7');
@@ -1822,7 +1822,7 @@
       } catch(e) { console.error('peak-hours error', e); }
     }
 
-    // ── Cancelaciones ──────────────────────────────────────────────────────────
+    // -- Cancelaciones ----------------------------------------------------------
     async function refreshCancellations() {
       try {
         const data = await fetchJson('/api/cancellation-rate?days=7');
@@ -1844,7 +1844,7 @@
       } catch(e) { console.error('cancellations error', e); }
     }
 
-    // ── Pedidos que volvieron atrás ────────────────────────────────────────────
+    // -- Pedidos que volvieron atrás --------------------------------------------
     async function refreshBacktracked() {
       try {
         const d = await fetchJson('/api/backtracked-orders?days=7');
@@ -1862,7 +1862,7 @@
       } catch(e) { console.error('backtracked error', e); }
     }
 
-    // ── Tiempo hasta primer movimiento ────────────────────────────────────────
+    // -- Tiempo hasta primer movimiento ----------------------------------------
     async function refreshTTFM() {
       try {
         const d = await fetchJson('/api/time-to-first-move?days=7');
@@ -1885,7 +1885,7 @@
       ]);
     }
 
-    // ── Pedidos pendientes ─────────────────────────────────────────────────────
+    // -- Pedidos pendientes -----------------------------------------------------
     let pendingData = [];
     let activeFilter = 'all';
     const PREP_STATUSES  = ["Turbo","Flex","Colecta","Recolectando","Nuevos pedidos","Agendados","A distribuir","error de etiqueta"];
@@ -1985,7 +1985,7 @@
     }
 
 
-    // ── Arranque ───────────────────────────────────────────────────────────────
+    // -- Arranque ---------------------------------------------------------------
     // Primer render inmediato (incluyendo tops), luego arranca el loop
     (async () => {
       try {
